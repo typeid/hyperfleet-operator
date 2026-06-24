@@ -44,7 +44,7 @@ The operator presigns `sts:GetCallerIdentity` requests as bearer tokens for EKS 
 
 ## 2. DynamoDB Tables
 
-Create 6 DynamoDB tables per management cluster, each with a single string partition key `documentID`:
+Create 6 DynamoDB tables per management cluster in the **regional account**, each with a single string partition key `documentID`:
 
 ```
 {mc}-specs-applydesires
@@ -56,6 +56,8 @@ Create 6 DynamoDB tables per management cluster, each with a single string parti
 ```
 
 Use on-demand billing (`PAY_PER_REQUEST`).
+
+Tables live in the regional account so the operator accesses DynamoDB locally. Each kube-applier-aws instance on a management cluster assumes a cross-account role to read specs and write statuses back.
 
 ## 3. fleet-db EKS Access Entry
 
