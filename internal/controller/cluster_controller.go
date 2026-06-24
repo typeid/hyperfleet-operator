@@ -83,7 +83,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// Look up Placement — if none or not Bound, wait.
 	placementName := fmt.Sprintf("%s-placement", cluster.Name)
 	var placement hyperfleetv1alpha1.Placement
-	if err := r.Get(ctx, types.NamespacedName{Name: placementName}, &placement); err != nil {
+	if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: placementName}, &placement); err != nil {
 		if apierrors.IsNotFound(err) {
 			log.Info("Waiting for Placement", "cluster", cluster.Name)
 			r.setPhase(ctx, &cluster, "WaitingForPlacement")
@@ -204,7 +204,7 @@ func (r *ClusterReconciler) reconcileDelete(ctx context.Context, cluster *hyperf
 	// finalizer that creates a DeleteDesire before clearing, so we wait
 	// for all NodePools to be fully gone before proceeding.
 	var nodePools hyperfleetv1alpha1.NodePoolList
-	if err := r.List(ctx, &nodePools); err != nil {
+	if err := r.List(ctx, &nodePools, client.InNamespace(cluster.Namespace)); err != nil {
 		return ctrl.Result{}, fmt.Errorf("list nodepools: %w", err)
 	}
 	pendingNodePools := 0
@@ -264,7 +264,7 @@ func (r *ClusterReconciler) reconcileDelete(ctx context.Context, cluster *hyperf
 	// GC ordering is non-deterministic and envtest doesn't run GC at all; OwnerReference is a safety net.
 	placementName := fmt.Sprintf("%s-placement", cluster.Name)
 	var placement hyperfleetv1alpha1.Placement
-	if err := r.Get(ctx, types.NamespacedName{Name: placementName}, &placement); err == nil {
+	if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: placementName}, &placement); err == nil {
 		log.Info("Deleting Placement", "placement", placementName)
 		if err := r.Delete(ctx, &placement); err != nil && !apierrors.IsNotFound(err) {
 			return ctrl.Result{}, fmt.Errorf("delete placement: %w", err)

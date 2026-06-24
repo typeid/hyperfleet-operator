@@ -73,16 +73,16 @@ aws eks associate-access-policy \
   --cluster-name <fleet-db-cluster-name> \
   --principal-arn <operator-iam-role-arn> \
   --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy \
-  --access-scope type=namespace,namespaces=default
+  --access-scope type=cluster
 ```
 
-For production, scope the access policy to only the `hyperfleet.io` API group using a custom Kubernetes RBAC ClusterRole and binding instead of the cluster admin policy.
+CRDs are namespace-scoped under the customer's AWS account ID. The operator needs access to all namespaces on fleet-db (one per account). For production, scope the access policy to only the `hyperfleet.io` API group using a custom Kubernetes RBAC ClusterRole and binding instead of the cluster admin policy.
 
 ## 4. Install the Helm Chart
 
 ```bash
 helm install hyperfleet-operator charts/hyperfleet-operator \
-  --namespace hyperfleet-system --create-namespace \
+  --namespace hyperfleet-operator --create-namespace \
   --set awsRegion=us-east-1 \
   --set fleetDBClusterName=fleet-db-prod \
   --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=arn:aws:iam::<account>:role/<operator-role>
@@ -103,6 +103,7 @@ helm install hyperfleet-operator charts/hyperfleet-operator \
 | `image.tag`                  | `latest`                                         | Image tag                            |
 | `leaderElection.enabled`     | `true`                                           | Enable leader election               |
 | `serviceAccount.annotations` | `{}`                                             | SA annotations (set IAM role ARN)    |
+| `managementClusters`         | `[{id: mc01, region: us-east-1, accountId: ""}]` | MC registry (id, region, accountId)  |
 | `replicaCount`               | `1`                                              | Number of replicas                   |
 
 ## 5. Install CRDs
@@ -120,12 +121,12 @@ Or deploy them via ArgoCD targeting the fleet-db cluster.
 Check the operator logs:
 
 ```bash
-kubectl logs -n hyperfleet-system deploy/hyperfleet-operator -f
+kubectl logs -n hyperfleet-operator deploy/hyperfleet-operator -f
 ```
 
-Create a test Cluster CR on fleet-db and verify the operator creates a Placement and writes ApplyDesires to DynamoDB:
+Create a test Cluster CR on fleet-db (namespace = AWS account ID) and verify the operator creates a Placement and writes ApplyDesires to DynamoDB:
 
 ```bash
-kubectl get clusters.hyperfleet.io --kubeconfig <fleet-db-kubeconfig>
-kubectl get placements.hyperfleet.io --kubeconfig <fleet-db-kubeconfig>
+kubectl get clusters.hyperfleet.io -n <account-id> --kubeconfig <fleet-db-kubeconfig>
+kubectl get placements.hyperfleet.io -n <account-id> --kubeconfig <fleet-db-kubeconfig>
 ```

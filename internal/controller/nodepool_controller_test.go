@@ -35,25 +35,30 @@ var _ = Describe("NodePool Controller", func() {
 		const (
 			clusterName  = "test-np-cluster"
 			nodePoolName = "test-nodepool"
+			testNS       = "123456789012"
 		)
 
 		ctx := context.Background()
 
+		BeforeEach(func() {
+			ensureNamespace(ctx, testNS)
+		})
+
 		AfterEach(func() {
 			np := &hyperfleetv1alpha1.NodePool{}
-			if err := k8sClient.Get(ctx, types.NamespacedName{Name: nodePoolName}, np); err == nil {
+			if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: nodePoolName}, np); err == nil {
 				controllerutil.RemoveFinalizer(np, nodePoolFinalizer)
 				_ = k8sClient.Update(ctx, np)
 				_ = k8sClient.Delete(ctx, np)
 			}
 			cluster := &hyperfleetv1alpha1.Cluster{}
-			if err := k8sClient.Get(ctx, types.NamespacedName{Name: clusterName}, cluster); err == nil {
+			if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: clusterName}, cluster); err == nil {
 				controllerutil.RemoveFinalizer(cluster, clusterFinalizer)
 				_ = k8sClient.Update(ctx, cluster)
 				_ = k8sClient.Delete(ctx, cluster)
 			}
 			placement := &hyperfleetv1alpha1.Placement{}
-			if err := k8sClient.Get(ctx, types.NamespacedName{Name: clusterName + "-placement"}, placement); err == nil {
+			if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: clusterName + "-placement"}, placement); err == nil {
 				_ = k8sClient.Delete(ctx, placement)
 			}
 		})
@@ -72,13 +77,13 @@ var _ = Describe("NodePool Controller", func() {
 			}
 
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: nodePoolName},
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: nodePoolName},
 			})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.Requeue).To(BeTrue())
 
 			var updated hyperfleetv1alpha1.NodePool
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodePoolName}, &updated)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: nodePoolName}, &updated)).To(Succeed())
 			Expect(controllerutil.ContainsFinalizer(&updated, nodePoolFinalizer)).To(BeTrue())
 		})
 
@@ -98,11 +103,11 @@ var _ = Describe("NodePool Controller", func() {
 
 			// First reconcile: adds finalizer.
 			_, _ = reconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: nodePoolName},
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: nodePoolName},
 			})
 			// Second reconcile: cluster exists but no PlacementRef.
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: nodePoolName},
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: nodePoolName},
 			})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).NotTo(BeZero())
@@ -132,11 +137,11 @@ var _ = Describe("NodePool Controller", func() {
 
 			// First reconcile: adds finalizer.
 			_, _ = reconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: nodePoolName},
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: nodePoolName},
 			})
 			// Second reconcile: creates desire.
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: nodePoolName},
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: nodePoolName},
 			})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(fd.applyCount).To(Equal(1))
@@ -147,7 +152,8 @@ var _ = Describe("NodePool Controller", func() {
 func newTestNodePool(name, clusterRef string) *hyperfleetv1alpha1.NodePool {
 	return &hyperfleetv1alpha1.NodePool{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: name,
+			Name:      name,
+			Namespace: "123456789012",
 		},
 		Spec: hyperfleetv1alpha1.NodePoolSpec{
 			ClusterRef: clusterRef,

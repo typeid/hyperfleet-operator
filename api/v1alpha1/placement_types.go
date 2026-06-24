@@ -50,7 +50,7 @@ type PlacementStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster
+// +kubebuilder:resource:scope=Namespaced
 // +kubebuilder:printcolumn:name="Cluster",type=string,JSONPath=".spec.clusterRef"
 // +kubebuilder:printcolumn:name="MC",type=string,JSONPath=".spec.managementCluster"
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=".status.phase"

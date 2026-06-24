@@ -24,11 +24,11 @@ A workerless EKS cluster whose kube-apiserver serves as a strongly-consistent da
 
 ### CRDs
 
-All CRDs are **cluster-scoped** under API group `hyperfleet.io/v1alpha1`:
+All CRDs are **namespace-scoped** under API group `hyperfleet.io/v1alpha1`. The namespace is the customer's AWS account ID (e.g., `123456789012`), providing natural multi-tenancy isolation on fleet-db. The cluster ID is `metadata.name`; in future a regional DynamoDB table will guarantee uniqueness across fleet-db shards.
 
 - **Cluster** — represents a ROSA HCP cluster. Spec contains all the configuration needed to create a HostedCluster on a management cluster (networking, IAM roles, OIDC issuer, etc.).
-- **NodePool** — represents a set of worker nodes for a Cluster. References a parent Cluster via `spec.clusterRef`.
-- **Placement** — binds a Cluster to a management cluster. Created automatically by the Placement controller.
+- **NodePool** — represents a set of worker nodes for a Cluster. References a parent Cluster via `spec.clusterRef`. Must be in the same namespace as its parent Cluster.
+- **Placement** — binds a Cluster to a management cluster. Created automatically by the Placement controller. Must be in the same namespace as its Cluster.
 
 ### Controllers
 
@@ -66,6 +66,22 @@ documentID = UUIDv5(NamespaceUUID, "{taskKey}/{group}/{version}/{resource}/{name
 
 Same inputs always produce the same UUID, giving natural idempotency — re-reconciling a Cluster writes the same document IDs, updating existing rows rather than creating duplicates.
 
+### Management Cluster Registry
+
+The operator reads the list of available management clusters from a ConfigMap mounted as a YAML file. This ConfigMap lives on the Regional Cluster (where the operator runs), not on fleet-db, so it scales across fleet-db shards without cross-shard queries. The platform API updates it when registering management clusters.
+
+```yaml
+# ConfigMap data (clusters.yaml)
+- id: mc01
+  region: us-east-1
+  accountId: "123456789012"
+- id: mc02
+  region: us-east-1
+  accountId: "123456789012"
+```
+
+The Placement controller uses this registry for least-loaded scheduling — it counts existing Placements per MC and assigns new clusters to the MC with the fewest.
+
 ## Deployment
 
 The operator runs on the Regional Cluster (RC) as a Deployment, deployed via a Helm chart through ArgoCD. It connects to fleet-db via IAM authentication (EKS Pod Identity) and to DynamoDB using the same IAM role.
@@ -76,6 +92,7 @@ charts/hyperfleet-operator/
 ├── values.yaml
 ├── crds/                    # Auto-synced from config/crd/bases/ by make manifests
 └── templates/
+    ├── configmap-mc.yaml    # Management cluster registry
     ├── deployment.yaml
     ├── serviceaccount.yaml
     ├── clusterrole.yaml
@@ -87,6 +104,7 @@ Required configuration:
 - `awsRegion` — AWS region for DynamoDB and EKS DescribeCluster
 - `fleetDBClusterName` — EKS cluster name for fleet-db
 - `serviceAccount.annotations` — IAM role ARN for Pod Identity
+- `managementClusters` — list of management clusters (id, region, accountId)
 
 ## Future Work: Horizontal Scaling via Multiple fleet-db Clusters
 

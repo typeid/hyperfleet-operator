@@ -33,20 +33,27 @@ import (
 
 var _ = Describe("Cluster Controller", func() {
 	Context("When reconciling a new Cluster", func() {
-		const clusterName = "test-cluster-01"
+		const (
+			clusterName = "test-cluster-01"
+			testNS      = "123456789012"
+		)
 
 		ctx := context.Background()
 
+		BeforeEach(func() {
+			ensureNamespace(ctx, testNS)
+		})
+
 		AfterEach(func() {
 			resource := &hyperfleetv1alpha1.Cluster{}
-			err := k8sClient.Get(ctx, types.NamespacedName{Name: clusterName}, resource)
+			err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: clusterName}, resource)
 			if err == nil {
 				controllerutil.RemoveFinalizer(resource, clusterFinalizer)
 				_ = k8sClient.Update(ctx, resource)
 				_ = k8sClient.Delete(ctx, resource)
 			}
 			placement := &hyperfleetv1alpha1.Placement{}
-			if err := k8sClient.Get(ctx, types.NamespacedName{Name: clusterName + "-placement"}, placement); err == nil {
+			if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: clusterName + "-placement"}, placement); err == nil {
 				_ = k8sClient.Delete(ctx, placement)
 			}
 		})
@@ -62,13 +69,13 @@ var _ = Describe("Cluster Controller", func() {
 			}
 
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: clusterName},
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: clusterName},
 			})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.Requeue).To(BeTrue())
 
 			var updated hyperfleetv1alpha1.Cluster
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: clusterName}, &updated)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: clusterName}, &updated)).To(Succeed())
 			Expect(controllerutil.ContainsFinalizer(&updated, clusterFinalizer)).To(BeTrue())
 		})
 
@@ -84,17 +91,17 @@ var _ = Describe("Cluster Controller", func() {
 
 			// First reconcile adds finalizer.
 			_, _ = reconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: clusterName},
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: clusterName},
 			})
 			// Second reconcile checks for Placement.
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: clusterName},
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: clusterName},
 			})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).NotTo(BeZero())
 
 			var updated hyperfleetv1alpha1.Cluster
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: clusterName}, &updated)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: clusterName}, &updated)).To(Succeed())
 			Expect(updated.Status.Phase).To(Equal("WaitingForPlacement"))
 		})
 
@@ -105,7 +112,8 @@ var _ = Describe("Cluster Controller", func() {
 			// Create a Bound Placement.
 			placement := &hyperfleetv1alpha1.Placement{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: clusterName + "-placement",
+					Name:      clusterName + "-placement",
+					Namespace: testNS,
 				},
 				Spec: hyperfleetv1alpha1.PlacementSpec{
 					ClusterRef:        clusterName,
@@ -125,11 +133,11 @@ var _ = Describe("Cluster Controller", func() {
 
 			// First reconcile: adds finalizer.
 			_, _ = reconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: clusterName},
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: clusterName},
 			})
 			// Second reconcile: creates desires.
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: clusterName},
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: clusterName},
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -144,7 +152,10 @@ var _ = Describe("Cluster Controller", func() {
 
 			// Create a Placement so the deletion path has something to clean up.
 			placement := &hyperfleetv1alpha1.Placement{
-				ObjectMeta: metav1.ObjectMeta{Name: clusterName + "-placement"},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      clusterName + "-placement",
+					Namespace: testNS,
+				},
 				Spec: hyperfleetv1alpha1.PlacementSpec{
 					ClusterRef:        clusterName,
 					ManagementCluster: "mc01",
@@ -161,12 +172,12 @@ var _ = Describe("Cluster Controller", func() {
 
 			// First reconcile: adds finalizer.
 			_, _ = reconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: clusterName},
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: clusterName},
 			})
 
 			// Set placementRef so the deletion path writes a DeleteDesire.
 			var updated hyperfleetv1alpha1.Cluster
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: clusterName}, &updated)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: clusterName}, &updated)).To(Succeed())
 			updated.Status.PlacementRef = &hyperfleetv1alpha1.PlacementReference{
 				Name:              clusterName + "-placement",
 				ManagementCluster: "mc01",
@@ -178,7 +189,7 @@ var _ = Describe("Cluster Controller", func() {
 
 			// First deletion reconcile: writes DeleteDesire but no confirmation yet → requeues.
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: clusterName},
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: clusterName},
 			})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(fd.deleteCount).To(Equal(1))
@@ -187,19 +198,19 @@ var _ = Describe("Cluster Controller", func() {
 
 			// Placement should still exist (step 3 not reached yet).
 			var p hyperfleetv1alpha1.Placement
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: clusterName + "-placement"}, &p)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: clusterName + "-placement"}, &p)).To(Succeed())
 
 			// Simulate kube-applier-aws confirming the deletion.
 			fd.deleteStatus = &dynamo.DeleteDesireStatus{}
 
 			// Second deletion reconcile: confirmation found → deletes Placement, removes finalizer.
 			_, err = reconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: clusterName},
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: clusterName},
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Verify the Placement was deleted.
-			err = k8sClient.Get(ctx, types.NamespacedName{Name: clusterName + "-placement"}, &p)
+			err = k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: clusterName + "-placement"}, &p)
 			Expect(err).To(HaveOccurred())
 		})
 
@@ -211,7 +222,7 @@ var _ = Describe("Cluster Controller", func() {
 			}
 
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: "does-not-exist"},
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: "does-not-exist"},
 			})
 			Expect(err).NotTo(HaveOccurred())
 		})
@@ -221,7 +232,8 @@ var _ = Describe("Cluster Controller", func() {
 func newTestCluster(name string) *hyperfleetv1alpha1.Cluster {
 	return &hyperfleetv1alpha1.Cluster{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: name,
+			Name:      name,
+			Namespace: "123456789012",
 		},
 		Spec: hyperfleetv1alpha1.ClusterSpec{
 			Name:                      "my-cluster",

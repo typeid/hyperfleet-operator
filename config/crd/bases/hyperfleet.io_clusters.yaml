@@ -12,7 +12,7 @@ spec:
     listKind: ClusterList
     plural: clusters
     singular: cluster
-  scope: Cluster
+  scope: Namespaced
   versions:
   - additionalPrinterColumns:
     - jsonPath: .spec.name
@@ -37,6 +37,7 @@ spec:
         description: |-
           Cluster is the Schema for the clusters API.
           It represents a ROSA HCP cluster whose lifecycle is managed by the hyperfleet-operator.
+          The cluster ID is metadata.name; the owning account is metadata.namespace (AWS account ID).
         properties:
           apiVersion:
             description: |-

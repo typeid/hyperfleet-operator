@@ -12,7 +12,7 @@ spec:
     listKind: PlacementList
     plural: placements
     singular: placement
-  scope: Cluster
+  scope: Namespaced
   versions:
   - additionalPrinterColumns:
     - jsonPath: .spec.clusterRef

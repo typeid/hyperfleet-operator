@@ -19,6 +19,8 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -30,6 +32,7 @@ import (
 	hyperfleetv1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
 	"github.com/typeid/hyperfleet-operator/internal/controller"
 	dynamo "github.com/typeid/hyperfleet-operator/internal/dynamo"
+	"github.com/typeid/hyperfleet-operator/internal/mcconfig"
 )
 
 const (
@@ -111,6 +114,9 @@ var _ = BeforeSuite(func() {
 	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
 	Expect(err).NotTo(HaveOccurred())
 
+	By("creating test namespace")
+	Expect(k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "111222333444"}})).To(Succeed())
+
 	By("verifying DynamoDB connectivity")
 	_, err = dynamoDBCli.PutItem(ctx, &dynamodb.PutItemInput{
 		TableName: aws.String(mc + "-specs-applydesires"),
@@ -127,6 +133,13 @@ var _ = BeforeSuite(func() {
 	})
 	Expect(err).NotTo(HaveOccurred())
 
+	By("writing temporary MC config file")
+	mcConfigFile := filepath.Join(os.TempDir(), "hyperfleet-e2e-mc.yaml")
+	Expect(os.WriteFile(mcConfigFile, []byte("- id: mc01\n  region: us-east-1\n  accountId: \"111222333444\"\n"), 0644)).To(Succeed())
+
+	mcLoader, err := mcconfig.NewLoader(mcConfigFile)
+	Expect(err).NotTo(HaveOccurred())
+
 	By("starting controller manager")
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme: scheme.Scheme,
@@ -134,8 +147,9 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 
 	Expect((&controller.PlacementReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		MCConfig: mcLoader,
 	}).SetupWithManager(mgr)).To(Succeed())
 
 	Expect((&controller.ClusterReconciler{

@@ -34,17 +34,18 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	hyperfleetv1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
+	"github.com/typeid/hyperfleet-operator/internal/mcconfig"
 )
 
 const (
-	defaultManagementCluster = "mc01"
-	placementOwnerKey        = ".spec.clusterRef"
+	placementOwnerKey = ".spec.clusterRef"
 )
 
 // PlacementReconciler watches Cluster CRs and ensures each has a Placement.
 type PlacementReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme   *runtime.Scheme
+	MCConfig *mcconfig.Loader
 }
 
 // +kubebuilder:rbac:groups=hyperfleet.io,resources=clusters,verbs=get;list;watch
@@ -68,20 +69,25 @@ func (r *PlacementReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	placementName := fmt.Sprintf("%s-placement", cluster.Name)
 
 	var placement hyperfleetv1alpha1.Placement
-	err := r.Get(ctx, types.NamespacedName{Name: placementName}, &placement)
+	err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: placementName}, &placement)
 	if err != nil && !apierrors.IsNotFound(err) {
 		return ctrl.Result{}, fmt.Errorf("get placement: %w", err)
 	}
 
 	if apierrors.IsNotFound(err) {
-		log.Info("Creating Placement for Cluster", "cluster", cluster.Name, "mc", defaultManagementCluster)
+		mc, err := r.selectManagementCluster(ctx)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("select management cluster: %w", err)
+		}
+		log.Info("Creating Placement for Cluster", "cluster", cluster.Name, "mc", mc)
 		placement = hyperfleetv1alpha1.Placement{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: placementName,
+				Name:      placementName,
+				Namespace: cluster.Namespace,
 			},
 			Spec: hyperfleetv1alpha1.PlacementSpec{
 				ClusterRef:        cluster.Name,
-				ManagementCluster: defaultManagementCluster,
+				ManagementCluster: mc,
 			},
 		}
 		if err := controllerutil.SetOwnerReference(&cluster, &placement, r.Scheme); err != nil {
@@ -99,7 +105,7 @@ func (r *PlacementReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if placement.Status.Phase != "Bound" {
 		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 			var latest hyperfleetv1alpha1.Placement
-			if err := r.Get(ctx, types.NamespacedName{Name: placementName}, &latest); err != nil {
+			if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: placementName}, &latest); err != nil {
 				if apierrors.IsNotFound(err) {
 					return nil
 				}
@@ -149,6 +155,40 @@ func (r *PlacementReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	return ctrl.Result{}, nil
 }
 
+// selectManagementCluster picks the MC with the fewest existing Placements.
+func (r *PlacementReconciler) selectManagementCluster(ctx context.Context) (string, error) {
+	mcs := r.MCConfig.List()
+	if len(mcs) == 0 {
+		return "", fmt.Errorf("no management clusters configured")
+	}
+	if len(mcs) == 1 {
+		return mcs[0].ID, nil
+	}
+
+	var allPlacements hyperfleetv1alpha1.PlacementList
+	if err := r.List(ctx, &allPlacements); err != nil {
+		return "", fmt.Errorf("list placements: %w", err)
+	}
+
+	counts := make(map[string]int, len(mcs))
+	for _, mc := range mcs {
+		counts[mc.ID] = 0
+	}
+	for i := range allPlacements.Items {
+		counts[allPlacements.Items[i].Spec.ManagementCluster]++
+	}
+
+	best := mcs[0].ID
+	bestCount := counts[best]
+	for _, mc := range mcs[1:] {
+		if counts[mc.ID] < bestCount {
+			best = mc.ID
+			bestCount = counts[mc.ID]
+		}
+	}
+	return best, nil
+}
+
 func (r *PlacementReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&hyperfleetv1alpha1.Cluster{}).
@@ -162,7 +202,10 @@ func (r *PlacementReconciler) SetupWithManager(mgr ctrl.Manager) error {
 					return nil
 				}
 				return []reconcile.Request{
-					{NamespacedName: types.NamespacedName{Name: placement.Spec.ClusterRef}},
+					{NamespacedName: types.NamespacedName{
+						Namespace: placement.Namespace,
+						Name:      placement.Spec.ClusterRef,
+					}},
 				}
 			},
 		)).

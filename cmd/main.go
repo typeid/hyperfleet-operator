@@ -19,7 +19,9 @@ package main
 import (
 	"context"
 	"flag"
+	"log/slog"
 	"os"
+	"time"
 
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
@@ -37,6 +39,7 @@ import (
 	"github.com/typeid/hyperfleet-operator/internal/controller"
 	"github.com/typeid/hyperfleet-operator/internal/dynamo"
 	"github.com/typeid/hyperfleet-operator/internal/eksauth"
+	"github.com/typeid/hyperfleet-operator/internal/mcconfig"
 )
 
 var (
@@ -55,6 +58,7 @@ func main() {
 	var enableLeaderElection bool
 	var awsRegion string
 	var fleetDBClusterName string
+	var mcConfigPath string
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -62,6 +66,7 @@ func main() {
 		"Enable leader election for controller manager.")
 	flag.StringVar(&awsRegion, "aws-region", "", "AWS region for DynamoDB and EKS (required).")
 	flag.StringVar(&fleetDBClusterName, "fleet-db-cluster-name", "", "EKS cluster name for fleet-db (required).")
+	flag.StringVar(&mcConfigPath, "mc-config", "/etc/hyperfleet/clusters.yaml", "Path to management clusters config file.")
 
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
@@ -96,6 +101,11 @@ func main() {
 
 	dynamoClient := dynamo.NewClient(dynamodb.NewFromConfig(awsCfg))
 
+	mcLoader := mcconfig.NewLoaderLazy(mcConfigPath)
+	if err := mcLoader.Reload(); err != nil {
+		setupLog.Info("MC config not available at startup, will poll for it", "path", mcConfigPath, "error", err)
+	}
+
 	mgr, err := ctrl.NewManager(fleetDBConfig, ctrl.Options{
 		Scheme: scheme,
 		Metrics: metricsserver.Options{
@@ -127,8 +137,9 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.PlacementReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		MCConfig: mcLoader,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "placement")
 		os.Exit(1)
@@ -142,6 +153,10 @@ func main() {
 		setupLog.Error(err, "Failed to set up ready check")
 		os.Exit(1)
 	}
+
+	watchCtx, watchCancel := context.WithCancel(context.Background())
+	defer watchCancel()
+	go mcLoader.Watch(watchCtx, 5*time.Second, slog.Default())
 
 	setupLog.Info("Starting manager")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {

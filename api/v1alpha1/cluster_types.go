@@ -177,7 +177,7 @@ type PlacementReference struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster
+// +kubebuilder:resource:scope=Namespaced
 // +kubebuilder:printcolumn:name="Display Name",type=string,JSONPath=".spec.name"
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="MC",type=string,JSONPath=".status.placementRef.managementCluster"
@@ -186,6 +186,7 @@ type PlacementReference struct {
 
 // Cluster is the Schema for the clusters API.
 // It represents a ROSA HCP cluster whose lifecycle is managed by the hyperfleet-operator.
+// The cluster ID is metadata.name; the owning account is metadata.namespace (AWS account ID).
 type Cluster struct {
 	metav1.TypeMeta `json:",inline"`
 

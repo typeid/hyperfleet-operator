@@ -12,7 +12,7 @@ spec:
     listKind: NodePoolList
     plural: nodepools
     singular: nodepool
-  scope: Cluster
+  scope: Namespaced
   versions:
   - additionalPrinterColumns:
     - jsonPath: .spec.clusterRef

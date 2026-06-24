@@ -78,7 +78,7 @@ func (r *NodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	// Look up parent Cluster.
 	var cluster hyperfleetv1alpha1.Cluster
-	if err := r.Get(ctx, types.NamespacedName{Name: nodePool.Spec.ClusterRef}, &cluster); err != nil {
+	if err := r.Get(ctx, types.NamespacedName{Namespace: nodePool.Namespace, Name: nodePool.Spec.ClusterRef}, &cluster); err != nil {
 		log.Info("Waiting for parent Cluster", "clusterRef", nodePool.Spec.ClusterRef)
 		r.setPhase(ctx, &nodePool, "WaitingForCluster")
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
@@ -150,7 +150,7 @@ func (r *NodePoolReconciler) reconcileDelete(ctx context.Context, nodePool *hype
 
 	// Look up parent Cluster for MC target.
 	var cluster hyperfleetv1alpha1.Cluster
-	if err := r.Get(ctx, types.NamespacedName{Name: nodePool.Spec.ClusterRef}, &cluster); err == nil && cluster.Status.PlacementRef != nil {
+	if err := r.Get(ctx, types.NamespacedName{Namespace: nodePool.Namespace, Name: nodePool.Spec.ClusterRef}, &cluster); err == nil && cluster.Status.PlacementRef != nil {
 		mc := cluster.Status.PlacementRef.ManagementCluster
 		specsPrefix := dynamo.SpecsPrefix(mc)
 		statusPrefix := dynamo.StatusPrefix(mc)

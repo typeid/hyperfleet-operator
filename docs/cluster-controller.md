@@ -1,5 +1,11 @@
 # Cluster Controller
 
+## Naming Convention
+
+The **cluster ID** is `metadata.name` on the Cluster CR. The owning AWS account is `metadata.namespace` (the account ID, e.g., `123456789012`). All related resources (NodePool, Placement) must be in the same namespace as their parent Cluster.
+
+In future, a regional DynamoDB table will guarantee cluster ID uniqueness across fleet-db shards. For now, with a single fleet-db instance, uniqueness is enforced by the kube-apiserver.
+
 ## Creation Flow
 
 ```mermaid
@@ -81,7 +87,7 @@ sequenceDiagram
     CC->>FDB: Detect DeletionTimestamp, set phase=Deleting
 
     Note over CC: Step 1 — Delete associated NodePools
-    CC->>FDB: List NodePools where clusterRef=clusterID
+    CC->>FDB: List NodePools in same namespace where clusterRef=clusterID
     CC->>FDB: Delete each NodePool CR
     NPC->>DDB: NodePool finalizer writes DeleteDesire (nodepools)
     NPC->>FDB: Remove NodePool finalizer → CR deleted
@@ -101,7 +107,7 @@ sequenceDiagram
 
 ### Deletion Steps
 
-1. **NodePool cascade**: Lists all NodePools with matching `clusterRef`, deletes each one. Each NodePool has its own finalizer that writes a DeleteDesire before clearing. The controller requeues until all NodePools are fully gone.
+1. **NodePool cascade**: Lists all NodePools in the same namespace with matching `clusterRef`, deletes each one. Each NodePool has its own finalizer that writes a DeleteDesire before clearing. The controller requeues until all NodePools are fully gone.
 2. **Namespace DeleteDesire**: Writes a DeleteDesire for the `clusters-{clusterID}` namespace, which cascades deletion of all MC resources. Polls the `{mc}-status-deletedesires` table until kube-applier-aws confirms the deletion.
 3. **Placement cleanup**: Deletes the Placement CR (last, after MC resources are confirmed gone).
 4. **Finalizer removal**: Removes the `hyperfleet.io/operator` finalizer, allowing Kubernetes to complete the CR deletion.

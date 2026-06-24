@@ -23,10 +23,15 @@ spec:
           args:
             - --aws-region={{ .Values.awsRegion }}
             - --fleet-db-cluster-name={{ .Values.fleetDBClusterName }}
+            - --mc-config=/etc/hyperfleet/clusters.yaml
             {{- if .Values.leaderElection.enabled }}
             - --leader-elect=true
             {{- end }}
             - --health-probe-bind-address=:8081
+          volumeMounts:
+            - name: mc-config
+              mountPath: /etc/hyperfleet
+              readOnly: true
           ports:
             - name: health
               containerPort: 8081
@@ -47,6 +52,10 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+      volumes:
+        - name: mc-config
+          configMap:
+            name: {{ include "hyperfleet-operator.fullname" . }}-mc
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

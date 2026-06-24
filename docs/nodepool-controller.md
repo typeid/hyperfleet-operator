@@ -25,7 +25,7 @@ sequenceDiagram
 ### Reconcile Steps
 
 1. **Finalizer**: Adds `hyperfleet.io/operator` finalizer on first reconcile, requeues
-2. **Parent Cluster lookup**: Gets Cluster CR by `spec.clusterRef`, waits if not found or no `PlacementRef`
+2. **Parent Cluster lookup**: Gets Cluster CR by `spec.clusterRef` in the same namespace (account ID), waits if not found or no `PlacementRef`
 3. **Manifest generation**: Generates a HyperShift NodePool manifest
 4. **ApplyDesire**: Writes one ApplyDesire to `{mc}-specs-applydesires`
 5. **Status propagation**: Reads status from DynamoDB, updates NodePool CR conditions
