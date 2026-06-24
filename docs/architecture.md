@@ -53,8 +53,6 @@ Per management cluster, there are 6 DynamoDB tables:
 - `{mc}-specs-deletedesires` / `{mc}-status-deletedesires`
 - `{mc}-specs-readdesires` / `{mc}-status-readdesires`
 
-Specs tables have DynamoDB Streams enabled so kube-applier-aws can react to changes immediately.
-
 ### Document IDs
 
 Document IDs are deterministic UUID v5 values computed from the resource identity:

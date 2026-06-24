@@ -55,7 +55,7 @@ Create 6 DynamoDB tables per management cluster, each with a single string parti
 {mc}-status-readdesires
 ```
 
-Use on-demand billing (`PAY_PER_REQUEST`). Enable DynamoDB Streams on the specs tables so kube-applier-aws can react to changes immediately.
+Use on-demand billing (`PAY_PER_REQUEST`).
 
 ## 3. fleet-db EKS Access Entry
 
