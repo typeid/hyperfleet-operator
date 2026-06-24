@@ -1,0 +1,258 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package controller
+
+import (
+	"context"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	hyperfleetv1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
+	"github.com/typeid/hyperfleet-operator/internal/dynamo"
+)
+
+var _ = Describe("Cluster Controller", func() {
+	Context("When reconciling a new Cluster", func() {
+		const clusterName = "test-cluster-01"
+
+		ctx := context.Background()
+
+		AfterEach(func() {
+			resource := &hyperfleetv1alpha1.Cluster{}
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: clusterName}, resource)
+			if err == nil {
+				controllerutil.RemoveFinalizer(resource, clusterFinalizer)
+				_ = k8sClient.Update(ctx, resource)
+				_ = k8sClient.Delete(ctx, resource)
+			}
+			placement := &hyperfleetv1alpha1.Placement{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: clusterName + "-placement"}, placement); err == nil {
+				_ = k8sClient.Delete(ctx, placement)
+			}
+		})
+
+		It("should add a finalizer on first reconcile", func() {
+			resource := newTestCluster(clusterName)
+			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+
+			reconciler := &ClusterReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Dynamo: &fakeDynamo{},
+			}
+
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: clusterName},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Requeue).To(BeTrue())
+
+			var updated hyperfleetv1alpha1.Cluster
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: clusterName}, &updated)).To(Succeed())
+			Expect(controllerutil.ContainsFinalizer(&updated, clusterFinalizer)).To(BeTrue())
+		})
+
+		It("should set WaitingForPlacement when no Placement exists", func() {
+			resource := newTestCluster(clusterName)
+			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+
+			reconciler := &ClusterReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Dynamo: &fakeDynamo{},
+			}
+
+			// First reconcile adds finalizer.
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: clusterName},
+			})
+			// Second reconcile checks for Placement.
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: clusterName},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).NotTo(BeZero())
+
+			var updated hyperfleetv1alpha1.Cluster
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: clusterName}, &updated)).To(Succeed())
+			Expect(updated.Status.Phase).To(Equal("WaitingForPlacement"))
+		})
+
+		It("should create DynamoDB desires when Placement is Bound", func() {
+			resource := newTestCluster(clusterName)
+			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+
+			// Create a Bound Placement.
+			placement := &hyperfleetv1alpha1.Placement{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: clusterName + "-placement",
+				},
+				Spec: hyperfleetv1alpha1.PlacementSpec{
+					ClusterRef:        clusterName,
+					ManagementCluster: "mc01",
+				},
+			}
+			Expect(k8sClient.Create(ctx, placement)).To(Succeed())
+			placement.Status.Phase = "Bound"
+			Expect(k8sClient.Status().Update(ctx, placement)).To(Succeed())
+
+			fd := &fakeDynamo{}
+			reconciler := &ClusterReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Dynamo: fd,
+			}
+
+			// First reconcile: adds finalizer.
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: clusterName},
+			})
+			// Second reconcile: creates desires.
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: clusterName},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// 7 cluster manifests → 7 ApplyDesires + 1 ReadDesire.
+			Expect(fd.applyCount).To(Equal(7))
+			Expect(fd.readCount).To(Equal(1))
+		})
+
+		It("should create DeleteDesire, wait for confirmation, and remove finalizer on deletion", func() {
+			resource := newTestCluster(clusterName)
+			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+
+			// Create a Placement so the deletion path has something to clean up.
+			placement := &hyperfleetv1alpha1.Placement{
+				ObjectMeta: metav1.ObjectMeta{Name: clusterName + "-placement"},
+				Spec: hyperfleetv1alpha1.PlacementSpec{
+					ClusterRef:        clusterName,
+					ManagementCluster: "mc01",
+				},
+			}
+			Expect(k8sClient.Create(ctx, placement)).To(Succeed())
+
+			fd := &fakeDynamo{}
+			reconciler := &ClusterReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Dynamo: fd,
+			}
+
+			// First reconcile: adds finalizer.
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: clusterName},
+			})
+
+			// Set placementRef so the deletion path writes a DeleteDesire.
+			var updated hyperfleetv1alpha1.Cluster
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: clusterName}, &updated)).To(Succeed())
+			updated.Status.PlacementRef = &hyperfleetv1alpha1.PlacementReference{
+				Name:              clusterName + "-placement",
+				ManagementCluster: "mc01",
+			}
+			Expect(k8sClient.Status().Update(ctx, &updated)).To(Succeed())
+
+			// Delete the CR — sets DeletionTimestamp.
+			Expect(k8sClient.Delete(ctx, &updated)).To(Succeed())
+
+			// First deletion reconcile: writes DeleteDesire but no confirmation yet → requeues.
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: clusterName},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fd.deleteCount).To(Equal(1))
+			Expect(fd.deletes[0].Spec.TargetItem.Resource).To(Equal("namespaces"))
+			Expect(result.RequeueAfter).NotTo(BeZero(), "should requeue while waiting for confirmation")
+
+			// Placement should still exist (step 3 not reached yet).
+			var p hyperfleetv1alpha1.Placement
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: clusterName + "-placement"}, &p)).To(Succeed())
+
+			// Simulate kube-applier-aws confirming the deletion.
+			fd.deleteStatus = &dynamo.DeleteDesireStatus{}
+
+			// Second deletion reconcile: confirmation found → deletes Placement, removes finalizer.
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: clusterName},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify the Placement was deleted.
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: clusterName + "-placement"}, &p)
+			Expect(err).To(HaveOccurred())
+		})
+
+		It("should handle not-found gracefully", func() {
+			reconciler := &ClusterReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Dynamo: &fakeDynamo{},
+			}
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: "does-not-exist"},
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+})
+
+func newTestCluster(name string) *hyperfleetv1alpha1.Cluster {
+	return &hyperfleetv1alpha1.Cluster{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+		},
+		Spec: hyperfleetv1alpha1.ClusterSpec{
+			Name:                      "my-cluster",
+			AccountID:                 "123456789012",
+			Region:                    "us-east-1",
+			Zone:                      "us-east-1a",
+			BaseDomain:                "example.com",
+			VpcID:                     "vpc-abc123",
+			PrivateSubnetIds:          "subnet-1,subnet-2",
+			WorkerInstanceProfileName: "worker-profile",
+			WorkerSecurityGroupId:     "sg-abc123",
+			OIDCIssuerURL:             "https://oidc.example.com/cluster-01",
+			Release:                   hyperfleetv1alpha1.ReleaseSpec{Image: "quay.io/openshift-release-dev/ocp-release:4.17.0-ec.2-x86_64"},
+			Networking: hyperfleetv1alpha1.NetworkingSpec{
+				ClusterNetwork: []hyperfleetv1alpha1.NetworkEntry{{CIDR: "10.128.0.0/14"}},
+				ServiceNetwork: []hyperfleetv1alpha1.NetworkEntry{{CIDR: "172.30.0.0/16"}},
+				MachineNetwork: []hyperfleetv1alpha1.NetworkEntry{{CIDR: "10.0.0.0/16"}},
+			},
+			Platform: hyperfleetv1alpha1.PlatformSpec{
+				AWS: hyperfleetv1alpha1.AWSPlatformSpec{
+					Roles: hyperfleetv1alpha1.AWSRolesSpec{
+						ControlPlaneOperatorARN: "arn:aws:iam::123456789012:role/cpo",
+						IngressARN:              "arn:aws:iam::123456789012:role/ingress",
+						ImageRegistryARN:        "arn:aws:iam::123456789012:role/registry",
+						KubeCloudControllerARN:  "arn:aws:iam::123456789012:role/kccm",
+						NodePoolManagementARN:   "arn:aws:iam::123456789012:role/npm",
+						NetworkARN:              "arn:aws:iam::123456789012:role/network",
+						StorageARN:              "arn:aws:iam::123456789012:role/storage",
+					},
+				},
+			},
+		},
+	}
+}

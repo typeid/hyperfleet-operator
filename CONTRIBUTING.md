@@ -1,0 +1,40 @@
+# Contributing to hyperfleet-operator
+
+## Prerequisites
+
+- Go 1.24+
+- [controller-gen](https://book.kubebuilder.io/reference/controller-gen) (installed via `make controller-gen`)
+- [podman](https://podman.io/) or docker for building images
+- [Kind](https://kind.sigs.k8s.io/) for e2e tests
+
+## Development Workflow
+
+```bash
+# Generate CRDs and deepcopy
+make manifests generate
+
+# Run unit tests (envtest — no cluster needed)
+make test
+
+# Build the binary
+make build
+
+# Build the container image
+make docker-build IMG=quay.io/youruser/hyperfleet-operator:dev
+
+# Run e2e tests (requires Kind + DynamoDB Local)
+make test-e2e
+```
+
+## Adding a New CRD Field
+
+1. Edit the type in `api/v1alpha1/`
+2. Run `make manifests generate` to regenerate CRDs and deepcopy
+3. Update the relevant controller and manifest generation code
+4. Add tests
+
+## Code Style
+
+- Follow standard Go conventions
+- No comments unless the _why_ is non-obvious
+- Use `go fmt` and `go vet` (run automatically by `make test`)

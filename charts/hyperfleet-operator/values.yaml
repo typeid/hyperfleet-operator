@@ -1,0 +1,28 @@
+replicaCount: 1
+
+image:
+  repository: quay.io/cbusse_openshift/hyperfleet-operator
+  tag: latest
+  pullPolicy: IfNotPresent
+
+awsRegion: ""
+fleetDBClusterName: ""
+
+leaderElection:
+  enabled: true
+
+serviceAccount:
+  create: true
+  name: hyperfleet-operator
+  annotations: {}
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+nodeSelector: {}
+tolerations: []

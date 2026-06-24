@@ -1,0 +1,331 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: clusters.hyperfleet.io
+spec:
+  group: hyperfleet.io
+  names:
+    kind: Cluster
+    listKind: ClusterList
+    plural: clusters
+    singular: cluster
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.name
+      name: Display Name
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.placementRef.managementCluster
+      name: MC
+      type: string
+    - jsonPath: .status.controlPlaneEndpoint
+      name: Endpoint
+      priority: 1
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Cluster is the Schema for the clusters API.
+          It represents a ROSA HCP cluster whose lifecycle is managed by the hyperfleet-operator.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ClusterSpec defines the desired state of a ROSA HCP cluster.
+            properties:
+              accountId:
+                description: AccountID is the AWS account ID that owns this cluster.
+                pattern: ^\d{12}$
+                type: string
+              baseDomain:
+                description: BaseDomain is the DNS base domain for the cluster.
+                minLength: 1
+                type: string
+              creatorARN:
+                description: |-
+                  CreatorARN is the IAM ARN of the user who created this cluster.
+                  Used to bootstrap the initial cluster-admin RBAC mapping.
+                pattern: '^arn:aws:'
+                type: string
+              name:
+                description: Name is the human-readable display name for the cluster
+                  (3-53 characters).
+                maxLength: 53
+                minLength: 3
+                type: string
+              networking:
+                description: Networking configures cluster networking CIDRs.
+                properties:
+                  clusterNetwork:
+                    description: ClusterNetwork is the CIDR block(s) for pod IPs.
+                    items:
+                      description: NetworkEntry is a single CIDR block.
+                      properties:
+                        cidr:
+                          type: string
+                      required:
+                      - cidr
+                      type: object
+                    type: array
+                  machineNetwork:
+                    description: MachineNetwork is the CIDR block(s) for node IPs.
+                    items:
+                      description: NetworkEntry is a single CIDR block.
+                      properties:
+                        cidr:
+                          type: string
+                      required:
+                      - cidr
+                      type: object
+                    type: array
+                  serviceNetwork:
+                    description: ServiceNetwork is the CIDR block(s) for service ClusterIPs.
+                    items:
+                      description: NetworkEntry is a single CIDR block.
+                      properties:
+                        cidr:
+                          type: string
+                      required:
+                      - cidr
+                      type: object
+                    type: array
+                required:
+                - clusterNetwork
+                - machineNetwork
+                - serviceNetwork
+                type: object
+              oidcIssuerURL:
+                description: |-
+                  OIDCIssuerURL is the OIDC issuer URL for this cluster's service account
+                  token verification (e.g. a CloudFront or S3 endpoint).
+                pattern: ^https://
+                type: string
+              platform:
+                description: Platform contains cloud-provider-specific configuration.
+                properties:
+                  aws:
+                    description: AWS contains AWS-specific platform configuration.
+                    properties:
+                      roles:
+                        description: Roles contains the IAM role ARNs for HyperShift
+                          components.
+                        properties:
+                          controlPlaneOperatorARN:
+                            pattern: '^arn:aws:iam::'
+                            type: string
+                          imageRegistryARN:
+                            pattern: '^arn:aws:iam::'
+                            type: string
+                          ingressARN:
+                            pattern: '^arn:aws:iam::'
+                            type: string
+                          kubeCloudControllerARN:
+                            pattern: '^arn:aws:iam::'
+                            type: string
+                          networkARN:
+                            pattern: '^arn:aws:iam::'
+                            type: string
+                          nodePoolManagementARN:
+                            pattern: '^arn:aws:iam::'
+                            type: string
+                          storageARN:
+                            pattern: '^arn:aws:iam::'
+                            type: string
+                        required:
+                        - controlPlaneOperatorARN
+                        - imageRegistryARN
+                        - ingressARN
+                        - kubeCloudControllerARN
+                        - networkARN
+                        - nodePoolManagementARN
+                        - storageARN
+                        type: object
+                    required:
+                    - roles
+                    type: object
+                required:
+                - aws
+                type: object
+              privateSubnetIds:
+                description: PrivateSubnetIds is a comma-separated list of private
+                  subnet IDs.
+                minLength: 1
+                type: string
+              region:
+                description: Region is the AWS region (e.g. us-east-1).
+                minLength: 1
+                type: string
+              release:
+                description: Release specifies the OpenShift release to use for the
+                  control plane.
+                properties:
+                  image:
+                    description: Image is the release payload image reference.
+                    minLength: 1
+                    type: string
+                required:
+                - image
+                type: object
+              vpcId:
+                description: VpcID is the AWS VPC ID for the cluster's worker nodes.
+                pattern: ^vpc-[a-z0-9]+$
+                type: string
+              workerInstanceProfileName:
+                description: WorkerInstanceProfileName is the IAM instance profile
+                  for worker nodes.
+                minLength: 1
+                type: string
+              workerSecurityGroupId:
+                description: WorkerSecurityGroupId is the security group ID for worker
+                  nodes.
+                pattern: ^sg-[a-z0-9]+$
+                type: string
+              zone:
+                description: |-
+                  Zone is the AWS availability zone (e.g. us-east-1a).
+                  Workaround for CCM region detection on EKS (OCPBUGS-84562).
+                minLength: 1
+                type: string
+            required:
+            - accountId
+            - baseDomain
+            - name
+            - networking
+            - oidcIssuerURL
+            - platform
+            - privateSubnetIds
+            - region
+            - release
+            - vpcId
+            - workerInstanceProfileName
+            - workerSecurityGroupId
+            - zone
+            type: object
+          status:
+            description: ClusterStatus defines the observed state of a Cluster.
+            properties:
+              conditions:
+                description: |-
+                  Conditions represent the latest observations of the cluster's state.
+                  Known condition types: Available, Degraded, DesiresWritten.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              controlPlaneEndpoint:
+                description: ControlPlaneEndpoint is the API server endpoint for the
+                  hosted cluster.
+                type: string
+              observedGeneration:
+                description: ObservedGeneration is the most recent generation observed
+                  by the controller.
+                format: int64
+                type: integer
+              phase:
+                description: Phase summarizes the cluster's lifecycle state.
+                type: string
+              placementRef:
+                description: PlacementRef references the Placement that assigned this
+                  cluster to a management cluster.
+                properties:
+                  managementCluster:
+                    description: ManagementCluster is the target management cluster
+                      ID (e.g. mc01).
+                    type: string
+                  name:
+                    description: Name is the Placement CR name.
+                    type: string
+                required:
+                - managementCluster
+                - name
+                type: object
+              version:
+                description: Version is the running OpenShift version.
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
