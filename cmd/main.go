@@ -30,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -99,8 +100,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Ensure CRDs exist on fleet-db before starting informers.
-	if err := crdinstall.Install(ctx, fleetDBConfig, crdbases.YAMLs); err != nil {
+	// Ensure namespace and CRDs exist on fleet-db before starting informers.
+	if err := crdinstall.Install(ctx, fleetDBConfig, "hyperfleet-system", crdbases.YAMLs); err != nil {
 		setupLog.Error(err, "Failed to install CRDs on fleet-db")
 		os.Exit(1)
 	}
@@ -121,7 +122,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	mcLoader := mcconfig.NewLoader(mgr.GetAPIReader())
+	// The mcconfig loader reads from the local RC cluster (in-cluster config),
+	// not fleet-db, because the management-clusters ConfigMap lives on the RC.
+	localClient, err := client.NewWithWatch(ctrl.GetConfigOrDie(), client.Options{Scheme: scheme})
+	if err != nil {
+		setupLog.Error(err, "Failed to create local cluster client")
+		os.Exit(1)
+	}
+	mcLoader := mcconfig.NewLoader(localClient)
 
 	if err := (&controller.ClusterReconciler{
 		Client: mgr.GetClient(),
