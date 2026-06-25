@@ -44,7 +44,9 @@ func NewRESTConfig(ctx context.Context, awsCfg aws.Config, clusterName string) (
 	}
 
 	provider := &tokenProvider{
-		sts:         sts.NewFromConfig(awsCfg),
+		sts: sts.NewFromConfig(awsCfg, func(o *sts.Options) {
+			o.BaseEndpoint = aws.String("https://sts." + awsCfg.Region + ".amazonaws.com")
+		}),
 		clusterName: clusterName,
 	}
 
