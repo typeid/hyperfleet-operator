@@ -70,10 +70,10 @@ Same inputs always produce the same UUID, giving natural idempotency — re-reco
 
 ### Management Cluster Registry
 
-The operator reads the list of available management clusters from a ConfigMap mounted as a YAML file. This ConfigMap lives on the Regional Cluster (where the operator runs), not on fleet-db, so it scales across fleet-db shards without cross-shard queries. The platform API updates it when registering management clusters.
+The operator reads the list of available management clusters from the ConfigMap `management-clusters` in the `platform-api` namespace on the Regional Cluster. The platform API creates and updates this ConfigMap when registering management clusters. The operator polls it every 5 seconds via the Kubernetes API — this is a temporary data source, so we poll rather than building a full controller with informer watches.
 
 ```yaml
-# ConfigMap data (clusters.yaml)
+# ConfigMap management-clusters (key: clusters.yaml)
 - id: mc01
   region: us-east-1
   accountId: "123456789012"
@@ -94,7 +94,6 @@ charts/hyperfleet-operator/
 ├── values.yaml
 ├── crds/                    # Auto-synced from config/crd/bases/ by make manifests
 └── templates/
-    ├── configmap-mc.yaml    # Management cluster registry
     ├── deployment.yaml
     ├── serviceaccount.yaml
     ├── clusterrole.yaml
@@ -106,7 +105,7 @@ Required configuration:
 - `awsRegion` — AWS region for DynamoDB and EKS DescribeCluster
 - `fleetDBClusterName` — EKS cluster name for fleet-db
 - `serviceAccount.annotations` — IAM role ARN for Pod Identity
-- `managementClusters` — list of management clusters (id, region, accountId)
+- ConfigMap `management-clusters` in `platform-api` namespace — MC registry (created by the platform API)
 
 ## Future Work: Horizontal Scaling via Multiple fleet-db Clusters
 

@@ -63,7 +63,7 @@ var _ = Describe("Placement Controller", func() {
 
 			mcFile := filepath.Join(os.TempDir(), "placement-test-mc.yaml")
 			Expect(os.WriteFile(mcFile, []byte("- id: mc01\n  region: us-east-1\n  accountId: \"123456789012\"\n"), 0644)).To(Succeed())
-			mcLoader, err := mcconfig.NewLoader(mcFile)
+			mcLoader, err := mcconfig.NewLoaderFromFile(mcFile)
 			Expect(err).NotTo(HaveOccurred())
 
 			reconciler := &PlacementReconciler{
@@ -90,7 +90,7 @@ var _ = Describe("Placement Controller", func() {
 
 			mcFile := filepath.Join(os.TempDir(), "placement-test-mc2.yaml")
 			Expect(os.WriteFile(mcFile, []byte("- id: mc01\n  region: us-east-1\n  accountId: \"123456789012\"\n"), 0644)).To(Succeed())
-			mcLoader, err := mcconfig.NewLoader(mcFile)
+			mcLoader, err := mcconfig.NewLoaderFromFile(mcFile)
 			Expect(err).NotTo(HaveOccurred())
 
 			reconciler := &PlacementReconciler{

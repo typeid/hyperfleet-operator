@@ -103,7 +103,6 @@ helm install hyperfleet-operator charts/hyperfleet-operator \
 | `image.tag`                  | `latest`                                         | Image tag                            |
 | `leaderElection.enabled`     | `true`                                           | Enable leader election               |
 | `serviceAccount.annotations` | `{}`                                             | SA annotations (set IAM role ARN)    |
-| `managementClusters`         | `[{id: mc01, region: us-east-1, accountId: ""}]` | MC registry (id, region, accountId)  |
 | `replicaCount`               | `1`                                              | Number of replicas                   |
 
 ## 5. Install CRDs

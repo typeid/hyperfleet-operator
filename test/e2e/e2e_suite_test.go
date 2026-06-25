@@ -30,7 +30,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	hyperfleetv1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
+	crdbases "github.com/typeid/hyperfleet-operator/config/crd/bases"
 	"github.com/typeid/hyperfleet-operator/internal/controller"
+	"github.com/typeid/hyperfleet-operator/internal/crdinstall"
 	dynamo "github.com/typeid/hyperfleet-operator/internal/dynamo"
 	"github.com/typeid/hyperfleet-operator/internal/mcconfig"
 )
@@ -99,10 +101,7 @@ var _ = BeforeSuite(func() {
 	By("bootstrapping envtest")
 	Expect(hyperfleetv1alpha1.AddToScheme(scheme.Scheme)).To(Succeed())
 
-	testEnv = &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
-		ErrorIfCRDPathMissing: true,
-	}
+	testEnv = &envtest.Environment{}
 	if dir := firstEnvTestBinDir(); dir != "" {
 		testEnv.BinaryAssetsDirectory = dir
 	}
@@ -110,6 +109,9 @@ var _ = BeforeSuite(func() {
 	cfg, err = testEnv.Start()
 	Expect(err).NotTo(HaveOccurred())
 	Expect(cfg).NotTo(BeNil())
+
+	By("installing CRDs via crdinstall (same path as production)")
+	Expect(crdinstall.Install(ctx, cfg, crdbases.YAMLs)).To(Succeed())
 
 	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
 	Expect(err).NotTo(HaveOccurred())
@@ -133,12 +135,20 @@ var _ = BeforeSuite(func() {
 	})
 	Expect(err).NotTo(HaveOccurred())
 
-	By("writing temporary MC config file")
-	mcConfigFile := filepath.Join(os.TempDir(), "hyperfleet-e2e-mc.yaml")
-	Expect(os.WriteFile(mcConfigFile, []byte("- id: mc01\n  region: us-east-1\n  accountId: \"111222333444\"\n"), 0644)).To(Succeed())
+	By("creating MC config ConfigMap")
+	Expect(k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: mcconfig.ConfigMapNamespace}})).To(Succeed())
+	Expect(k8sClient.Create(ctx, &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      mcconfig.ConfigMapName,
+			Namespace: mcconfig.ConfigMapNamespace,
+		},
+		Data: map[string]string{
+			mcconfig.ConfigMapKey: "- id: mc01\n  region: us-east-1\n  accountId: \"111222333444\"\n",
+		},
+	})).To(Succeed())
 
-	mcLoader, err := mcconfig.NewLoader(mcConfigFile)
-	Expect(err).NotTo(HaveOccurred())
+	mcLoader := mcconfig.NewLoader(k8sClient)
+	Expect(mcLoader.Reload(ctx)).To(Succeed())
 
 	By("starting controller manager")
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{

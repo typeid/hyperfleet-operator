@@ -8,11 +8,6 @@ image:
 awsRegion: ""
 fleetDBClusterName: ""
 
-managementClusters:
-  - id: mc01
-    region: us-east-1
-    accountId: "000000000000"
-
 leaderElection:
   enabled: true
 

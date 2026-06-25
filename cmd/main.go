@@ -36,7 +36,9 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	hyperfleetv1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
+	crdbases "github.com/typeid/hyperfleet-operator/config/crd/bases"
 	"github.com/typeid/hyperfleet-operator/internal/controller"
+	"github.com/typeid/hyperfleet-operator/internal/crdinstall"
 	"github.com/typeid/hyperfleet-operator/internal/dynamo"
 	"github.com/typeid/hyperfleet-operator/internal/eksauth"
 	"github.com/typeid/hyperfleet-operator/internal/mcconfig"
@@ -58,7 +60,6 @@ func main() {
 	var enableLeaderElection bool
 	var awsRegion string
 	var fleetDBClusterName string
-	var mcConfigPath string
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -66,7 +67,6 @@ func main() {
 		"Enable leader election for controller manager.")
 	flag.StringVar(&awsRegion, "aws-region", "", "AWS region for DynamoDB and EKS (required).")
 	flag.StringVar(&fleetDBClusterName, "fleet-db-cluster-name", "", "EKS cluster name for fleet-db (required).")
-	flag.StringVar(&mcConfigPath, "mc-config", "/etc/hyperfleet/clusters.yaml", "Path to management clusters config file.")
 
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
@@ -99,12 +99,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	dynamoClient := dynamo.NewClient(dynamodb.NewFromConfig(awsCfg))
-
-	mcLoader := mcconfig.NewLoaderLazy(mcConfigPath)
-	if err := mcLoader.Reload(); err != nil {
-		setupLog.Info("MC config not available at startup, will poll for it", "path", mcConfigPath, "error", err)
+	// Ensure CRDs exist on fleet-db before starting informers.
+	if err := crdinstall.Install(ctx, fleetDBConfig, crdbases.YAMLs); err != nil {
+		setupLog.Error(err, "Failed to install CRDs on fleet-db")
+		os.Exit(1)
 	}
+
+	dynamoClient := dynamo.NewClient(dynamodb.NewFromConfig(awsCfg))
 
 	mgr, err := ctrl.NewManager(fleetDBConfig, ctrl.Options{
 		Scheme: scheme,
@@ -119,6 +120,8 @@ func main() {
 		setupLog.Error(err, "Failed to start manager")
 		os.Exit(1)
 	}
+
+	mcLoader := mcconfig.NewLoader(mgr.GetAPIReader())
 
 	if err := (&controller.ClusterReconciler{
 		Client: mgr.GetClient(),
