@@ -1,3 +1,4 @@
+# Keep in sync with config/rbac/role.yaml
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -15,6 +16,15 @@ rules:
     resources: ["clusters/finalizers"]
     verbs: ["update"]
   - apiGroups: ["hyperfleet.io"]
+    resources: ["hyperfleetmanifests"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["hyperfleet.io"]
+    resources: ["hyperfleetmanifests/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["hyperfleet.io"]
+    resources: ["hyperfleetmanifests/finalizers"]
+    verbs: ["update"]
+  - apiGroups: ["hyperfleet.io"]
     resources: ["nodepools"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["hyperfleet.io"]
@@ -29,9 +39,6 @@ rules:
   - apiGroups: ["hyperfleet.io"]
     resources: ["placements/status"]
     verbs: ["get", "update", "patch"]
-  - apiGroups: ["hyperfleet.io"]
-    resources: ["placements/finalizers"]
-    verbs: ["update"]
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

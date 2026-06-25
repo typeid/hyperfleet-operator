@@ -7,6 +7,9 @@ import (
 )
 
 // ResourceReference identifies a Kubernetes resource without needing a RESTMapper.
+// Resource is the plural form (e.g. "nodepools") because kube-applier-aws uses it
+// to build Kubernetes REST paths. This could be eliminated if kube-applier-aws
+// derived the plural via discovery against the MC API server instead.
 type ResourceReference struct {
 	Group     string `json:"group"               dynamodbav:"group"`
 	Version   string `json:"version"             dynamodbav:"version"`

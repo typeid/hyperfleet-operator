@@ -27,7 +27,9 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	hypershiftv1beta1 "github.com/openshift/hypershift/api/hypershift/v1beta1"
 	hyperfleetv1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
+	"github.com/typeid/hyperfleet-operator/internal/dynamo"
 )
 
 var _ = Describe("NodePool Controller", func() {
@@ -146,6 +148,175 @@ var _ = Describe("NodePool Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(fd.applyCount).To(Equal(1))
 		})
+
+		It("should create DeleteDesire, wait for confirmation, and remove finalizer on deletion", func() {
+			cluster := newTestCluster(clusterName)
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+			cluster.Status.PlacementRef = &hyperfleetv1alpha1.PlacementReference{
+				Name:              clusterName + "-placement",
+				ManagementCluster: "mc01",
+			}
+			Expect(k8sClient.Status().Update(ctx, cluster)).To(Succeed())
+
+			np := newTestNodePool(nodePoolName, clusterName)
+			Expect(k8sClient.Create(ctx, np)).To(Succeed())
+
+			fd := &fakeDynamo{}
+			reconciler := &NodePoolReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Dynamo: fd,
+			}
+
+			// Add finalizer.
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: nodePoolName},
+			})
+
+			// Delete the NodePool.
+			var toDelete hyperfleetv1alpha1.NodePool
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: nodePoolName}, &toDelete)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, &toDelete)).To(Succeed())
+
+			// First deletion reconcile: writes DeleteDesire but no confirmation → requeues.
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: nodePoolName},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fd.deleteCount).To(Equal(1))
+			Expect(fd.deletes[0].Spec.TargetItem.Resource).To(Equal("nodepools"))
+			Expect(result.RequeueAfter).NotTo(BeZero(), "should requeue while waiting for confirmation")
+
+			// Simulate kube-applier-aws confirming the deletion.
+			fd.deleteStatus = &dynamo.DeleteDesireStatus{}
+
+			// Second deletion reconcile: confirmation found → removes finalizer.
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: nodePoolName},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify NodePool is gone (finalizer removed → k8s deletes it).
+			err = k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: nodePoolName}, &hyperfleetv1alpha1.NodePool{})
+			Expect(err).To(HaveOccurred())
+		})
+
+		It("should create ReadDesire alongside ApplyDesire", func() {
+			cluster := newTestCluster(clusterName)
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+			cluster.Status.PlacementRef = &hyperfleetv1alpha1.PlacementReference{
+				Name:              clusterName + "-placement",
+				ManagementCluster: "mc01",
+			}
+			Expect(k8sClient.Status().Update(ctx, cluster)).To(Succeed())
+
+			np := newTestNodePool(nodePoolName, clusterName)
+			Expect(k8sClient.Create(ctx, np)).To(Succeed())
+
+			fd := &fakeDynamo{}
+			reconciler := &NodePoolReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Dynamo: fd,
+			}
+
+			// First reconcile: adds finalizer.
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: nodePoolName},
+			})
+			// Second reconcile: creates desires.
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: nodePoolName},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fd.applyCount).To(Equal(1))
+			Expect(fd.readCount).To(Equal(1))
+			Expect(fd.reads[0].Spec.TargetItem.Resource).To(Equal("nodepools"))
+		})
+
+		It("should set Phase=Ready when ReadDesire reports Ready=True", func() {
+			cluster := newTestCluster(clusterName)
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+			cluster.Status.PlacementRef = &hyperfleetv1alpha1.PlacementReference{
+				Name:              clusterName + "-placement",
+				ManagementCluster: "mc01",
+			}
+			Expect(k8sClient.Status().Update(ctx, cluster)).To(Succeed())
+
+			np := newTestNodePool(nodePoolName, clusterName)
+			Expect(k8sClient.Create(ctx, np)).To(Succeed())
+
+			fd := &fakeDynamo{
+				applyStatus: &dynamo.ApplyDesireStatus{AppliedResourceGeneration: 1},
+				readStatus: &dynamo.ReadDesireStatus{
+					KubeContent: []byte(`{"status":{"conditions":[{"type":"Ready","status":"True","reason":"AsExpected","message":"All nodes ready","lastTransitionTime":"2026-06-25T10:00:00Z"}]}}`),
+				},
+			}
+			reconciler := &NodePoolReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Dynamo: fd,
+			}
+
+			// First reconcile: adds finalizer.
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: nodePoolName},
+			})
+			// Second reconcile: creates desires + reads status.
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: nodePoolName},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var updated hyperfleetv1alpha1.NodePool
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: nodePoolName}, &updated)).To(Succeed())
+			Expect(updated.Status.Phase).To(Equal(hyperfleetv1alpha1.NodePoolPhaseReady))
+		})
+
+		It("should clean up ReadDesire on deletion", func() {
+			cluster := newTestCluster(clusterName)
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+			cluster.Status.PlacementRef = &hyperfleetv1alpha1.PlacementReference{
+				Name:              clusterName + "-placement",
+				ManagementCluster: "mc01",
+			}
+			Expect(k8sClient.Status().Update(ctx, cluster)).To(Succeed())
+
+			np := newTestNodePool(nodePoolName, clusterName)
+			Expect(k8sClient.Create(ctx, np)).To(Succeed())
+
+			fd := &fakeDynamo{
+				deleteStatus: &dynamo.DeleteDesireStatus{},
+			}
+			reconciler := &NodePoolReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Dynamo: fd,
+			}
+
+			// Add finalizer.
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: nodePoolName},
+			})
+
+			// Delete the NodePool.
+			var toDelete hyperfleetv1alpha1.NodePool
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: nodePoolName}, &toDelete)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, &toDelete)).To(Succeed())
+
+			// Reconcile deletion: DeleteDesire confirmed immediately, should also clean up ReadDesire.
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: nodePoolName},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(fd.deletedSpecs).To(HaveLen(1))
+			Expect(fd.deletedSpecs[0]).To(ContainSubstring("-readdesires/"))
+		})
 	})
 })
 
@@ -158,18 +329,18 @@ func newTestNodePool(name, clusterRef string) *hyperfleetv1alpha1.NodePool {
 		Spec: hyperfleetv1alpha1.NodePoolSpec{
 			ClusterRef: clusterRef,
 			Replicas:   2,
-			Management: hyperfleetv1alpha1.NodePoolManagementSpec{
+			Management: hypershiftv1beta1.NodePoolManagement{
 				AutoRepair:  true,
-				UpgradeType: "Replace",
+				UpgradeType: hypershiftv1beta1.UpgradeTypeReplace,
 			},
-			Release: hyperfleetv1alpha1.ReleaseSpec{
+			Release: hypershiftv1beta1.Release{
 				Image: "quay.io/openshift-release-dev/ocp-release:4.17.0-ec.2-x86_64",
 			},
 			Platform: hyperfleetv1alpha1.NodePoolPlatformSpec{
 				AWS: hyperfleetv1alpha1.AWSNodePoolSpec{
 					InstanceType:    "m6a.xlarge",
-					RootVolume:      hyperfleetv1alpha1.RootVolumeSpec{Size: 120, Type: "gp3"},
-					SubnetId:        "subnet-abc123",
+					RootVolume:      hypershiftv1beta1.Volume{Size: 120, Type: "gp3"},
+					SubnetID:        "subnet-abc123",
 					InstanceProfile: "worker-profile",
 					SecurityGroups:  []string{"sg-abc123"},
 				},

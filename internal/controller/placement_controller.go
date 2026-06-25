@@ -102,7 +102,7 @@ func (r *PlacementReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// Ensure Placement status is Bound.
-	if placement.Status.Phase != "Bound" {
+	if placement.Status.Phase != hyperfleetv1alpha1.PlacementPhaseBound {
 		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 			var latest hyperfleetv1alpha1.Placement
 			if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: placementName}, &latest); err != nil {
@@ -111,7 +111,7 @@ func (r *PlacementReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 				}
 				return err
 			}
-			if latest.Status.Phase == "Bound" {
+			if latest.Status.Phase == hyperfleetv1alpha1.PlacementPhaseBound {
 				return nil
 			}
 			meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
@@ -121,7 +121,7 @@ func (r *PlacementReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 				Message:            fmt.Sprintf("Assigned to management cluster %s", latest.Spec.ManagementCluster),
 				ObservedGeneration: latest.Generation,
 			})
-			latest.Status.Phase = "Bound"
+			latest.Status.Phase = hyperfleetv1alpha1.PlacementPhaseBound
 			latest.Status.ObservedGeneration = latest.Generation
 			return r.Status().Update(ctx, &latest)
 		}); err != nil {
@@ -155,38 +155,13 @@ func (r *PlacementReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	return ctrl.Result{}, nil
 }
 
-// selectManagementCluster picks the MC with the fewest existing Placements.
-func (r *PlacementReconciler) selectManagementCluster(ctx context.Context) (string, error) {
+// TODO: Implement proper MC scheduling (least-loaded, capacity-aware, affinity).
+func (r *PlacementReconciler) selectManagementCluster(_ context.Context) (string, error) {
 	mcs := r.MCConfig.List()
 	if len(mcs) == 0 {
 		return "", fmt.Errorf("no management clusters configured")
 	}
-	if len(mcs) == 1 {
-		return mcs[0].ID, nil
-	}
-
-	var allPlacements hyperfleetv1alpha1.PlacementList
-	if err := r.List(ctx, &allPlacements); err != nil {
-		return "", fmt.Errorf("list placements: %w", err)
-	}
-
-	counts := make(map[string]int, len(mcs))
-	for _, mc := range mcs {
-		counts[mc.ID] = 0
-	}
-	for i := range allPlacements.Items {
-		counts[allPlacements.Items[i].Spec.ManagementCluster]++
-	}
-
-	best := mcs[0].ID
-	bestCount := counts[best]
-	for _, mc := range mcs[1:] {
-		if counts[mc.ID] < bestCount {
-			best = mc.ID
-			bestCount = counts[mc.ID]
-		}
-	}
-	return best, nil
+	return mcs[0].ID, nil
 }
 
 func (r *PlacementReconciler) SetupWithManager(mgr ctrl.Manager) error {

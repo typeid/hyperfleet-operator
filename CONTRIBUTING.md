@@ -5,7 +5,7 @@
 - Go 1.24+
 - [controller-gen](https://book.kubebuilder.io/reference/controller-gen) (installed via `make controller-gen`)
 - [podman](https://podman.io/) or docker for building images
-- [Kind](https://kind.sigs.k8s.io/) for e2e tests
+- Container runtime (podman or docker) for DynamoDB Local in e2e tests
 
 ## Development Workflow
 
@@ -22,7 +22,7 @@ make build
 # Build the container image
 make docker-build IMG=quay.io/youruser/hyperfleet-operator:dev
 
-# Run e2e tests (requires Kind + DynamoDB Local)
+# Run e2e tests (envtest + DynamoDB Local container)
 make test-e2e
 ```
 

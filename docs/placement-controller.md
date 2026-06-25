@@ -2,26 +2,36 @@
 
 ## Purpose
 
-Watches Cluster CRs. When a new Cluster appears without a Placement, creates one by selecting a management cluster using least-loaded scheduling. Sets owner reference so the Placement is garbage-collected with its Cluster.
+Watches Cluster CRs. When a new Cluster appears without a Placement, creates one by selecting a management cluster. Sets owner reference so the Placement is garbage-collected with its Cluster. Skips Clusters that are being deleted.
 
 ## MC Selection
 
-The controller reads the available management clusters from a ConfigMap mounted as `/etc/hyperfleet/clusters.yaml` (see [Architecture — MC Registry](architecture.md#management-cluster-registry)). When multiple MCs are available, it lists all existing Placements across all namespaces, counts how many are assigned to each MC, and picks the one with the fewest. With a single MC, it is assigned directly.
+The controller reads the available management clusters from a ConfigMap mounted as `/etc/hyperfleet/clusters.yaml` (see [Architecture — MC Registry](architecture.md#management-cluster-registry)). Currently, it picks the first available MC from the list. A placement strategy is planned but not yet implemented — see the `TODO` in `selectManagementCluster`.
 
 ## Reconcile Flow
 
 ```mermaid
 flowchart TD
-    A[Watch: new Cluster CR] --> B{Placement exists?}
+    A[Watch: Cluster CR or Placement CR] --> B{Cluster being deleted?}
     B -->|Yes| C[No-op]
-    B -->|No| D[Select MC via least-loaded scheduling]
-    D --> E[Create Placement CR in same namespace]
-    E --> F[Set ownerReference → Cluster]
-    F --> G[Set status.phase = Bound]
+    B -->|No| D{Placement exists?}
+    D -->|Yes| E[Ensure status.phase = Bound]
+    D -->|No| F[Select MC from config]
+    F --> G[Create Placement CR in same namespace]
+    G --> H[Set ownerReference → Cluster]
+    H --> E
+    E --> I[Set Cluster.status.PlacementRef]
 ```
+
+## Watches
+
+The controller watches two resource types:
+
+- **Cluster CRs** — primary watch, reconciles when a Cluster is created or updated
+- **Placement CRs** — secondary watch via `handler.EnqueueRequestsFromMapFunc`, which maps a Placement back to its parent Cluster via `spec.clusterRef` and triggers reconciliation
 
 ## Notes
 
 - Cluster and Placement are namespace-scoped under the customer's AWS account ID. The Placement is created in the same namespace as the Cluster.
-- Owner references ensure Placements are garbage-collected when the Cluster CR is deleted.
+- Owner references ensure Placements are garbage-collected when the Cluster CR is deleted. The Cluster controller also explicitly deletes the Placement during its deletion flow as a safety measure.
 - The MC ConfigMap is managed by the platform API when registering management clusters. The operator polls the mounted file every 5 seconds and reloads automatically when changes are detected. This is a temporary mechanism; the long-term plan is a regional DynamoDB table for MC registration.

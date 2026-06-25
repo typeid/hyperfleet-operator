@@ -17,11 +17,27 @@ limitations under the License.
 package v1alpha1
 
 import (
+	hypershiftv1beta1 "github.com/openshift/hypershift/api/hypershift/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
+// ClusterPhase represents the lifecycle phase of a Cluster.
+// +kubebuilder:validation:Enum=WaitingForPlacement;Provisioning;Ready;Deleting
+type ClusterPhase string
+
+const (
+	ClusterPhaseWaitingForPlacement ClusterPhase = "WaitingForPlacement"
+	ClusterPhaseProvisioning        ClusterPhase = "Provisioning"
+	ClusterPhaseReady               ClusterPhase = "Ready"
+	ClusterPhaseDeleting            ClusterPhase = "Deleting"
+)
+
 // ClusterSpec defines the desired state of a ROSA HCP cluster.
+// +kubebuilder:validation:XValidation:rule="self.accountId == oldSelf.accountId",message="spec.accountId is immutable"
+// +kubebuilder:validation:XValidation:rule="self.region == oldSelf.region",message="spec.region is immutable"
+// +kubebuilder:validation:XValidation:rule="self.vpcId == oldSelf.vpcId",message="spec.vpcId is immutable"
+// +kubebuilder:validation:XValidation:rule="self.oidcIssuerURL == oldSelf.oidcIssuerURL",message="spec.oidcIssuerURL is immutable"
 type ClusterSpec struct {
 	// Name is the human-readable display name for the cluster (3-53 characters).
 	// +kubebuilder:validation:MinLength=3
@@ -49,20 +65,20 @@ type ClusterSpec struct {
 	// +kubebuilder:validation:Pattern=`^vpc-[a-z0-9]+$`
 	VpcID string `json:"vpcId"`
 
-	// PrivateSubnetIds is a comma-separated list of private subnet IDs.
-	// +kubebuilder:validation:MinLength=1
-	PrivateSubnetIds string `json:"privateSubnetIds"`
+	// PrivateSubnetIDs is the list of private subnet IDs for worker nodes.
+	// +kubebuilder:validation:MinItems=1
+	PrivateSubnetIDs []string `json:"privateSubnetIds"`
 
 	// WorkerInstanceProfileName is the IAM instance profile for worker nodes.
 	// +kubebuilder:validation:MinLength=1
 	WorkerInstanceProfileName string `json:"workerInstanceProfileName"`
 
-	// WorkerSecurityGroupId is the security group ID for worker nodes.
+	// WorkerSecurityGroupID is the security group ID for worker nodes.
 	// +kubebuilder:validation:Pattern=`^sg-[a-z0-9]+$`
-	WorkerSecurityGroupId string `json:"workerSecurityGroupId"`
+	WorkerSecurityGroupID string `json:"workerSecurityGroupId"`
 
 	// Release specifies the OpenShift release to use for the control plane.
-	Release ReleaseSpec `json:"release"`
+	Release hypershiftv1beta1.Release `json:"release"`
 
 	// Networking configures cluster networking CIDRs.
 	Networking NetworkingSpec `json:"networking"`
@@ -82,27 +98,26 @@ type ClusterSpec struct {
 	CreatorARN string `json:"creatorARN,omitempty"`
 }
 
-// ReleaseSpec identifies an OpenShift release payload.
-type ReleaseSpec struct {
-	// Image is the release payload image reference.
-	// +kubebuilder:validation:MinLength=1
-	Image string `json:"image"`
-}
-
 // NetworkingSpec configures cluster network CIDRs.
 type NetworkingSpec struct {
 	// ClusterNetwork is the CIDR block(s) for pod IPs.
+	// +kubebuilder:validation:MinItems=1
 	ClusterNetwork []NetworkEntry `json:"clusterNetwork"`
 
 	// ServiceNetwork is the CIDR block(s) for service ClusterIPs.
+	// +kubebuilder:validation:MinItems=1
 	ServiceNetwork []NetworkEntry `json:"serviceNetwork"`
 
 	// MachineNetwork is the CIDR block(s) for node IPs.
+	// +kubebuilder:validation:MinItems=1
 	MachineNetwork []NetworkEntry `json:"machineNetwork"`
 }
 
 // NetworkEntry is a single CIDR block.
 type NetworkEntry struct {
+	// CIDR is an IPv4 or IPv6 CIDR block (e.g. "10.128.0.0/14").
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=43
 	CIDR string `json:"cidr"`
 }
 
@@ -115,25 +130,7 @@ type PlatformSpec struct {
 // AWSPlatformSpec configures AWS-specific cluster settings.
 type AWSPlatformSpec struct {
 	// Roles contains the IAM role ARNs for HyperShift components.
-	Roles AWSRolesSpec `json:"roles"`
-}
-
-// AWSRolesSpec contains IAM role ARNs for each HyperShift component.
-type AWSRolesSpec struct {
-	// +kubebuilder:validation:Pattern=`^arn:aws:iam::`
-	ControlPlaneOperatorARN string `json:"controlPlaneOperatorARN"`
-	// +kubebuilder:validation:Pattern=`^arn:aws:iam::`
-	IngressARN string `json:"ingressARN"`
-	// +kubebuilder:validation:Pattern=`^arn:aws:iam::`
-	ImageRegistryARN string `json:"imageRegistryARN"`
-	// +kubebuilder:validation:Pattern=`^arn:aws:iam::`
-	KubeCloudControllerARN string `json:"kubeCloudControllerARN"`
-	// +kubebuilder:validation:Pattern=`^arn:aws:iam::`
-	NodePoolManagementARN string `json:"nodePoolManagementARN"`
-	// +kubebuilder:validation:Pattern=`^arn:aws:iam::`
-	NetworkARN string `json:"networkARN"`
-	// +kubebuilder:validation:Pattern=`^arn:aws:iam::`
-	StorageARN string `json:"storageARN"`
+	Roles hypershiftv1beta1.AWSRolesRef `json:"roles"`
 }
 
 // ClusterStatus defines the observed state of a Cluster.
@@ -147,7 +144,7 @@ type ClusterStatus struct {
 
 	// Phase summarizes the cluster's lifecycle state.
 	// +optional
-	Phase string `json:"phase,omitempty"`
+	Phase ClusterPhase `json:"phase,omitempty"`
 
 	// ControlPlaneEndpoint is the API server endpoint for the hosted cluster.
 	// +optional
@@ -177,7 +174,7 @@ type PlacementReference struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Namespaced
+// +kubebuilder:resource:scope=Namespaced,shortName=hfc
 // +kubebuilder:printcolumn:name="Display Name",type=string,JSONPath=".spec.name"
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="MC",type=string,JSONPath=".status.placementRef.managementCluster"

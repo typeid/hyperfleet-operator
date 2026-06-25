@@ -1,0 +1,167 @@
+# Manifest Controller
+
+Deploys arbitrary Kubernetes resources to a management cluster as a pass-through — raw manifests are written as-is to DynamoDB ApplyDesires. Resources with `watch: true` also get ReadDesires, mirroring their live state from the MC back into CR status. Unlike Cluster/NodePool controllers, no manifest generation happens; the content is user-supplied.
+
+Used for ZOA (deploying Jobs + RBAC with status feedback) and infrastructure resources (monitoring, CRDs, shared configs).
+
+## Creation Flow
+
+```mermaid
+sequenceDiagram
+    participant API as Platform API
+    participant FDB as fleet-db
+    participant Op as hyperfleet-operator
+    participant DDB as DynamoDB
+    participant KA as kube-applier-aws
+    participant MC as Management Cluster
+
+    API->>FDB: Create HyperFleetManifest CR
+    Op->>FDB: Watch detects new CR
+    Op->>FDB: Add finalizer (hyperfleet.io/manifest), requeue
+    Op->>DDB: Write ApplyDesires (one per resource)
+    Op->>DDB: Write ReadDesires (for watch: true resources)
+    Op->>FDB: Set phase=Applied
+    KA->>DDB: Read ApplyDesires
+    KA->>MC: Apply resources
+    KA->>MC: Watch resources (ReadDesires)
+    KA->>DDB: Write ReadDesire status (KubeContent)
+    Op->>DDB: Poll ReadDesire status (every 30s)
+    Op->>FDB: Update status.resourceStatuses
+```
+
+### Reconcile Steps
+
+1. **Finalizer**: Adds `hyperfleet.io/manifest` finalizer on first reconcile, requeues
+2. **ApplyDesires**: Writes one ApplyDesire per resource in `spec.resources`
+3. **ReadDesires**: For resources with `watch: true`, writes a ReadDesire. kube-applier-aws mirrors the resource's live state back to DynamoDB as raw `KubeContent`
+4. **Status feedback**: Polls ReadDesire statuses and surfaces raw `KubeContent` in `status.resourceStatuses`. The operator does not parse the content — consumers (e.g. ZOA reconciler) extract fields like `.status.succeeded` from the mirrored Job
+5. **Requeue**: Requeues every 30s if watched resources exist; otherwise done
+
+## Deletion Flow
+
+```mermaid
+sequenceDiagram
+    participant API as Platform API
+    participant FDB as fleet-db
+    participant Op as hyperfleet-operator
+    participant DDB as DynamoDB
+    participant KA as kube-applier-aws
+
+    API->>FDB: Delete HyperFleetManifest CR
+    Op->>FDB: Detect DeletionTimestamp
+    Op->>DDB: Write DeleteDesire for each resource
+    Op->>DDB: Poll status confirmations for all resources
+    Op->>Op: Requeue (5s) until all confirmed
+    KA->>DDB: Read DeleteDesires, delete from MC, confirm
+    Op->>DDB: Delete ReadDesire specs (for watch: true resources)
+    Op->>FDB: Remove finalizer → CR deleted
+```
+
+### Deletion Steps
+
+1. **Write DeleteDesires**: Iterates all resources, writes a DeleteDesire for each
+2. **Check confirmations**: Polls `{mc}-status-deletedesires` for every resource. Requeues at 5s until all are confirmed
+3. **ReadDesire cleanup**: Deletes ReadDesire specs from DynamoDB for any resources that had `watch: true`
+4. **Finalizer removal**: Removes finalizer, allowing Kubernetes to complete CR deletion
+
+## CRD Example (ZOA Trusted Action)
+
+```yaml
+apiVersion: hyperfleet.io/v1alpha1
+kind: HyperFleetManifest
+metadata:
+  name: zoa-collect-logs-abc123
+  namespace: "123456789012"
+spec:
+  managementCluster: mc01
+  resources:
+    - resource: serviceaccounts
+      content:
+        apiVersion: v1
+        kind: ServiceAccount
+        metadata:
+          name: zoa-runner
+          namespace: zoa-actions
+    - resource: roles
+      content:
+        apiVersion: rbac.authorization.k8s.io/v1
+        kind: Role
+        metadata:
+          name: zoa-runner
+          namespace: zoa-actions
+        rules:
+          - apiGroups: [""]
+            resources: ["pods/log"]
+            verbs: ["get"]
+    - resource: rolebindings
+      content:
+        apiVersion: rbac.authorization.k8s.io/v1
+        kind: RoleBinding
+        metadata:
+          name: zoa-runner
+          namespace: zoa-actions
+        roleRef:
+          apiGroup: rbac.authorization.k8s.io
+          kind: Role
+          name: zoa-runner
+        subjects:
+          - kind: ServiceAccount
+            name: zoa-runner
+            namespace: zoa-actions
+    - resource: jobs
+      watch: true
+      content:
+        apiVersion: batch/v1
+        kind: Job
+        metadata:
+          name: collect-logs-abc123
+          namespace: zoa-actions
+        spec:
+          template:
+            spec:
+              serviceAccountName: zoa-runner
+              containers:
+                - name: runner
+                  image: registry.example.com/zoa-runner:latest
+              restartPolicy: Never
+```
+
+### ResourceTemplate Fields
+
+| Field | Required | Description |
+| --- | --- | --- |
+| `resource` | Yes | Plural Kubernetes resource name (e.g. `jobs`, `configmaps`) |
+| `content` | Yes | Full Kubernetes manifest. Must include `apiVersion`, `kind`, `metadata.name` |
+| `watch` | No | Creates a ReadDesire, mirroring live state into `status.resourceStatuses` |
+
+## Document ID Scoping
+
+Each CR uses a scoped taskKey: `hyperfleet-manifest/{namespace}/{name}`. This prevents collisions between two HyperFleetManifest CRs deploying the same resource and between HyperFleetManifest and Cluster/NodePool controllers (which use `hyperfleet-operator`).
+
+## Status
+
+```yaml
+status:
+  phase: Applied
+  appliedResources: 4
+  resourceStatuses:
+    - resource: jobs
+      name: collect-logs-abc123
+      namespace: zoa-actions
+      kubeContent:
+        apiVersion: batch/v1
+        kind: Job
+        status:
+          succeeded: 1
+          completionTime: "2026-06-25T10:00:05Z"
+```
+
+- `phase: Applied` — ApplyDesires written to DynamoDB, not confirmed on MC
+- `resourceStatuses` — mirrored live state for `watch: true` resources. Empty until kube-applier-aws applies and mirrors back
+
+## Known Limitations
+
+- **No resource removal tracking**: Removing a resource from `spec.resources` without deleting the CR leaves the old ApplyDesire in DynamoDB. Delete the entire CR and recreate if the resource list changes.
+- **No drift detection**: Writes ApplyDesires on each reconcile but does not verify MC state matches.
+- **No multi-MC fan-out**: Each CR targets one MC. Create one per MC for multi-MC deployments.
+- **No admission-time validation**: Malformed `content` (missing `apiVersion` or `metadata.name`) errors at reconcile time, not admission.

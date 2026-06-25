@@ -11,6 +11,8 @@ spec:
     kind: Cluster
     listKind: ClusterList
     plural: clusters
+    shortNames:
+    - hfc
     singular: cluster
   scope: Namespaced
   versions:
@@ -88,10 +90,14 @@ spec:
                       description: NetworkEntry is a single CIDR block.
                       properties:
                         cidr:
+                          description: CIDR is an IPv4 or IPv6 CIDR block (e.g. "10.128.0.0/14").
+                          maxLength: 43
+                          minLength: 1
                           type: string
                       required:
                       - cidr
                       type: object
+                    minItems: 1
                     type: array
                   machineNetwork:
                     description: MachineNetwork is the CIDR block(s) for node IPs.
@@ -99,10 +105,14 @@ spec:
                       description: NetworkEntry is a single CIDR block.
                       properties:
                         cidr:
+                          description: CIDR is an IPv4 or IPv6 CIDR block (e.g. "10.128.0.0/14").
+                          maxLength: 43
+                          minLength: 1
                           type: string
                       required:
                       - cidr
                       type: object
+                    minItems: 1
                     type: array
                   serviceNetwork:
                     description: ServiceNetwork is the CIDR block(s) for service ClusterIPs.
@@ -110,10 +120,14 @@ spec:
                       description: NetworkEntry is a single CIDR block.
                       properties:
                         cidr:
+                          description: CIDR is an IPv4 or IPv6 CIDR block (e.g. "10.128.0.0/14").
+                          maxLength: 43
+                          minLength: 1
                           type: string
                       required:
                       - cidr
                       type: object
+                    minItems: 1
                     type: array
                 required:
                 - clusterNetwork
@@ -137,25 +151,186 @@ spec:
                           components.
                         properties:
                           controlPlaneOperatorARN:
-                            pattern: '^arn:aws:iam::'
+                            description: "controlPlaneOperatorARN  is an ARN value
+                              referencing a role appropriate for the Control Plane
+                              Operator.\n\nThe following is an example of a valid
+                              policy document:\n\n{\n\t\"Version\": \"2012-10-17\",\n\t\"Statement\":
+                              [\n\t\t{\n\t\t\t\"Effect\": \"Allow\",\n\t\t\t\"Action\":
+                              [\n\t\t\t\t\"ec2:CreateVpcEndpoint\",\n\t\t\t\t\"ec2:DescribeVpcEndpoints\",\n\t\t\t\t\"ec2:ModifyVpcEndpoint\",\n\t\t\t\t\"ec2:DeleteVpcEndpoints\",\n\t\t\t\t\"ec2:CreateTags\",\n\t\t\t\t\"route53:ListHostedZones\",\n\t\t\t\t\"ec2:CreateSecurityGroup\",\n\t\t\t\t\"ec2:AuthorizeSecurityGroupIngress\",\n\t\t\t\t\"ec2:AuthorizeSecurityGroupEgress\",\n\t\t\t\t\"ec2:DeleteSecurityGroup\",\n\t\t\t\t\"ec2:RevokeSecurityGroupIngress\",\n\t\t\t\t\"ec2:RevokeSecurityGroupEgress\",\n\t\t\t\t\"ec2:DescribeSecurityGroups\",\n\t\t\t\t\"ec2:DescribeVpcs\",\n\t\t\t],\n\t\t\t\"Resource\":
+                              \"*\"\n\t\t},\n\t\t{\n\t\t\t\"Effect\": \"Allow\",\n\t\t\t\"Action\":
+                              [\n\t\t\t\t\"route53:ChangeResourceRecordSets\",\n\t\t\t\t\"route53:ListResourceRecordSets\"\n\t\t\t],\n\t\t\t\"Resource\":
+                              \"arn:aws:route53:::%s\"\n\t\t}\n\t]\n}"
+                            maxLength: 2048
                             type: string
                           imageRegistryARN:
-                            pattern: '^arn:aws:iam::'
+                            description: "imageRegistryARN is an ARN value referencing
+                              a role appropriate for the Image Registry Operator.\n\nThe
+                              following is an example of a valid policy document:\n\n{\n\t\"Version\":
+                              \"2012-10-17\",\n\t\"Statement\": [\n\t\t{\n\t\t\t\"Effect\":
+                              \"Allow\",\n\t\t\t\"Action\": [\n\t\t\t\t\"s3:CreateBucket\",\n\t\t\t\t\"s3:DeleteBucket\",\n\t\t\t\t\"s3:PutBucketTagging\",\n\t\t\t\t\"s3:GetBucketTagging\",\n\t\t\t\t\"s3:PutBucketPublicAccessBlock\",\n\t\t\t\t\"s3:GetBucketPublicAccessBlock\",\n\t\t\t\t\"s3:PutEncryptionConfiguration\",\n\t\t\t\t\"s3:GetEncryptionConfiguration\",\n\t\t\t\t\"s3:PutLifecycleConfiguration\",\n\t\t\t\t\"s3:GetLifecycleConfiguration\",\n\t\t\t\t\"s3:GetBucketLocation\",\n\t\t\t\t\"s3:ListBucket\",\n\t\t\t\t\"s3:GetObject\",\n\t\t\t\t\"s3:PutObject\",\n\t\t\t\t\"s3:DeleteObject\",\n\t\t\t\t\"s3:ListBucketMultipartUploads\",\n\t\t\t\t\"s3:AbortMultipartUpload\",\n\t\t\t\t\"s3:ListMultipartUploadParts\"\n\t\t\t],\n\t\t\t\"Resource\":
+                              \"*\"\n\t\t}\n\t]\n}"
+                            maxLength: 2048
                             type: string
                           ingressARN:
-                            pattern: '^arn:aws:iam::'
+                            description: "ingressARN is an ARN value referencing a
+                              role appropriate for the Ingress Operator.\n\nThe following
+                              is an example of a valid policy document:\n\n{\n\t\"Version\":
+                              \"2012-10-17\",\n\t\"Statement\": [\n\t\t{\n\t\t\t\"Effect\":
+                              \"Allow\",\n\t\t\t\"Action\": [\n\t\t\t\t\"elasticloadbalancing:DescribeLoadBalancers\",\n\t\t\t\t\"tag:GetResources\",\n\t\t\t\t\"route53:ListHostedZones\"\n\t\t\t],\n\t\t\t\"Resource\":
+                              \"*\"\n\t\t},\n\t\t{\n\t\t\t\"Effect\": \"Allow\",\n\t\t\t\"Action\":
+                              [\n\t\t\t\t\"route53:ChangeResourceRecordSets\"\n\t\t\t],\n\t\t\t\"Resource\":
+                              [\n\t\t\t\t\"arn:aws:route53:::PUBLIC_ZONE_ID\",\n\t\t\t\t\"arn:aws:route53:::PRIVATE_ZONE_ID\"\n\t\t\t]\n\t\t}\n\t]\n}"
+                            maxLength: 2048
                             type: string
                           kubeCloudControllerARN:
-                            pattern: '^arn:aws:iam::'
+                            description: |-
+                              kubeCloudControllerARN is an ARN value referencing a role appropriate for the KCM/KCC.
+                              Source: https://cloud-provider-aws.sigs.k8s.io/prerequisites/#iam-policies
+
+                              The following is an example of a valid policy document:
+
+                               {
+                               "Version": "2012-10-17",
+                               "Statement": [
+                                 {
+                                   "Action": [
+                                     "autoscaling:DescribeAutoScalingGroups",
+                                     "autoscaling:DescribeLaunchConfigurations",
+                                     "autoscaling:DescribeTags",
+                                     "ec2:DescribeAvailabilityZones",
+                                     "ec2:DescribeInstances",
+                                     "ec2:DescribeImages",
+                                     "ec2:DescribeRegions",
+                                     "ec2:DescribeRouteTables",
+                                     "ec2:DescribeSecurityGroups",
+                                     "ec2:DescribeSubnets",
+                                     "ec2:DescribeVolumes",
+                                     "ec2:CreateSecurityGroup",
+                                     "ec2:CreateTags",
+                                     "ec2:CreateVolume",
+                                     "ec2:ModifyInstanceAttribute",
+                                     "ec2:ModifyVolume",
+                                     "ec2:AttachVolume",
+                                     "ec2:AuthorizeSecurityGroupIngress",
+                                     "ec2:CreateRoute",
+                                     "ec2:DeleteRoute",
+                                     "ec2:DeleteSecurityGroup",
+                                     "ec2:DeleteVolume",
+                                     "ec2:DetachVolume",
+                                     "ec2:RevokeSecurityGroupIngress",
+                                     "ec2:DescribeVpcs",
+                                     "elasticloadbalancing:AddTags",
+                                     "elasticloadbalancing:AttachLoadBalancerToSubnets",
+                                     "elasticloadbalancing:ApplySecurityGroupsToLoadBalancer",
+                                     "elasticloadbalancing:CreateLoadBalancer",
+                                     "elasticloadbalancing:CreateLoadBalancerPolicy",
+                                     "elasticloadbalancing:CreateLoadBalancerListeners",
+                                     "elasticloadbalancing:ConfigureHealthCheck",
+                                     "elasticloadbalancing:DeleteLoadBalancer",
+                                     "elasticloadbalancing:DeleteLoadBalancerListeners",
+                                     "elasticloadbalancing:DescribeLoadBalancers",
+                                     "elasticloadbalancing:DescribeLoadBalancerAttributes",
+                                     "elasticloadbalancing:DetachLoadBalancerFromSubnets",
+                                     "elasticloadbalancing:DeregisterInstancesFromLoadBalancer",
+                                     "elasticloadbalancing:ModifyLoadBalancerAttributes",
+                                     "elasticloadbalancing:RegisterInstancesWithLoadBalancer",
+                                     "elasticloadbalancing:SetLoadBalancerPoliciesForBackendServer",
+                                     "elasticloadbalancing:AddTags",
+                                     "elasticloadbalancing:CreateListener",
+                                     "elasticloadbalancing:CreateTargetGroup",
+                                     "elasticloadbalancing:DeleteListener",
+                                     "elasticloadbalancing:DeleteTargetGroup",
+                                     "elasticloadbalancing:DeregisterTargets",
+                                     "elasticloadbalancing:DescribeListeners",
+                                     "elasticloadbalancing:DescribeLoadBalancerPolicies",
+                                     "elasticloadbalancing:DescribeTargetGroups",
+                                     "elasticloadbalancing:DescribeTargetHealth",
+                                     "elasticloadbalancing:ModifyListener",
+                                     "elasticloadbalancing:ModifyTargetGroup",
+                                     "elasticloadbalancing:RegisterTargets",
+                                     "elasticloadbalancing:SetLoadBalancerPoliciesOfListener",
+                                     "iam:CreateServiceLinkedRole",
+                                     "kms:DescribeKey"
+                                   ],
+                                   "Resource": [
+                                     "*"
+                                   ],
+                                   "Effect": "Allow"
+                                 }
+                               ]
+                              }
+                            maxLength: 2048
                             type: string
                           networkARN:
-                            pattern: '^arn:aws:iam::'
+                            description: "networkARN is an ARN value referencing a
+                              role appropriate for the Network Operator.\n\nThe following
+                              is an example of a valid policy document:\n\n{\n\t\"Version\":
+                              \"2012-10-17\",\n\t\"Statement\": [\n\t\t{\n\t\t\t\"Effect\":
+                              \"Allow\",\n\t\t\t\"Action\": [\n\t\t\t\t\"ec2:DescribeInstances\",\n
+                              \      \"ec2:DescribeInstanceStatus\",\n       \"ec2:DescribeInstanceTypes\",\n
+                              \      \"ec2:UnassignPrivateIpAddresses\",\n       \"ec2:AssignPrivateIpAddresses\",\n
+                              \      \"ec2:UnassignIpv6Addresses\",\n       \"ec2:AssignIpv6Addresses\",\n
+                              \      \"ec2:DescribeSubnets\",\n       \"ec2:DescribeNetworkInterfaces\"\n\t\t\t],\n\t\t\t\"Resource\":
+                              \"*\"\n\t\t}\n\t]\n}"
+                            maxLength: 2048
                             type: string
                           nodePoolManagementARN:
-                            pattern: '^arn:aws:iam::'
+                            description: "nodePoolManagementARN is an ARN value referencing
+                              a role appropriate for the CAPI Controller.\n\nThe following
+                              is an example of a valid policy document:\n\n{\n  \"Version\":
+                              \"2012-10-17\",\n \"Statement\": [\n   {\n     \"Action\":
+                              [\n       \"ec2:AssociateRouteTable\",\n       \"ec2:AttachInternetGateway\",\n
+                              \      \"ec2:AuthorizeSecurityGroupIngress\",\n       \"ec2:CreateInternetGateway\",\n
+                              \      \"ec2:CreateNatGateway\",\n       \"ec2:CreateRoute\",\n
+                              \      \"ec2:CreateRouteTable\",\n       \"ec2:CreateSecurityGroup\",\n
+                              \      \"ec2:CreateSubnet\",\n       \"ec2:CreateTags\",\n
+                              \      \"ec2:DeleteInternetGateway\",\n       \"ec2:DeleteNatGateway\",\n
+                              \      \"ec2:DeleteRouteTable\",\n       \"ec2:DeleteSecurityGroup\",\n
+                              \      \"ec2:DeleteSubnet\",\n       \"ec2:DeleteTags\",\n
+                              \      \"ec2:DescribeAccountAttributes\",\n       \"ec2:DescribeAddresses\",\n
+                              \      \"ec2:DescribeAvailabilityZones\",\n       \"ec2:DescribeImages\",\n
+                              \      \"ec2:DescribeInstances\",\n       \"ec2:DescribeInternetGateways\",\n
+                              \      \"ec2:DescribeNatGateways\",\n       \"ec2:DescribeNetworkInterfaces\",\n
+                              \      \"ec2:DescribeNetworkInterfaceAttribute\",\n
+                              \      \"ec2:DescribeRouteTables\",\n       \"ec2:DescribeSecurityGroups\",\n
+                              \      \"ec2:DescribeSubnets\",\n       \"ec2:DescribeVpcs\",\n
+                              \      \"ec2:DescribeVpcAttribute\",\n       \"ec2:DescribeVolumes\",\n
+                              \      \"ec2:DetachInternetGateway\",\n       \"ec2:DisassociateRouteTable\",\n
+                              \      \"ec2:DisassociateAddress\",\n       \"ec2:ModifyInstanceAttribute\",\n
+                              \      \"ec2:ModifyNetworkInterfaceAttribute\",\n       \"ec2:ModifySubnetAttribute\",\n
+                              \      \"ec2:RevokeSecurityGroupIngress\",\n       \"ec2:RunInstances\",\n
+                              \      \"ec2:TerminateInstances\",\n       \"tag:GetResources\",\n
+                              \      \"ec2:CreateLaunchTemplate\",\n       \"ec2:CreateLaunchTemplateVersion\",\n
+                              \      \"ec2:DescribeLaunchTemplates\",\n       \"ec2:DescribeLaunchTemplateVersions\",\n
+                              \      \"ec2:DeleteLaunchTemplate\",\n       \"ec2:DeleteLaunchTemplateVersions\"\n
+                              \    ],\n     \"Resource\": [\n       \"*\"\n     ],\n
+                              \    \"Effect\": \"Allow\"\n   },\n   {\n     \"Condition\":
+                              {\n       \"StringLike\": {\n         \"iam:AWSServiceName\":
+                              \"elasticloadbalancing.amazonaws.com\"\n       }\n     },\n
+                              \    \"Action\": [\n       \"iam:CreateServiceLinkedRole\"\n
+                              \    ],\n     \"Resource\": [\n       \"arn:*:iam::*:role/aws-service-role/elasticloadbalancing.amazonaws.com/AWSServiceRoleForElasticLoadBalancing\"\n
+                              \    ],\n     \"Effect\": \"Allow\"\n   },\n   {\n     \"Action\":
+                              [\n       \"iam:PassRole\"\n     ],\n     \"Resource\":
+                              [\n       \"arn:*:iam::*:role/*-worker-role\"\n     ],\n
+                              \    \"Effect\": \"Allow\"\n   },\n\t  {\n\t  \t\"Effect\":
+                              \"Allow\",\n\t  \t\"Action\": [\n\t  \t\t\"kms:Decrypt\",\n\t
+                              \ \t\t\"kms:ReEncrypt\",\n\t  \t\t\"kms:GenerateDataKeyWithoutPlainText\",\n\t
+                              \ \t\t\"kms:DescribeKey\"\n\t  \t],\n\t  \t\"Resource\":
+                              \"*\"\n\t  },\n\t  {\n\t  \t\"Effect\": \"Allow\",\n\t
+                              \ \t\"Action\": [\n\t  \t\t\"kms:CreateGrant\"\n\t  \t],\n\t
+                              \ \t\"Resource\": \"*\",\n\t  \t\"Condition\": {\n\t
+                              \ \t\t\"Bool\": {\n\t  \t\t\t\"kms:GrantIsForAWSResource\":
+                              true\n\t  \t\t}\n\t  \t}\n\t  }\n ]\n}"
+                            maxLength: 2048
                             type: string
                           storageARN:
-                            pattern: '^arn:aws:iam::'
+                            description: "storageARN is an ARN value referencing a
+                              role appropriate for the Storage Operator.\n\nThe following
+                              is an example of a valid policy document:\n\n{\n\t\"Version\":
+                              \"2012-10-17\",\n\t\"Statement\": [\n\t\t{\n\t\t\t\"Effect\":
+                              \"Allow\",\n\t\t\t\"Action\": [\n\t\t\t\t\"ec2:AttachVolume\",\n\t\t\t\t\"ec2:CreateSnapshot\",\n\t\t\t\t\"ec2:CreateTags\",\n\t\t\t\t\"ec2:CreateVolume\",\n\t\t\t\t\"ec2:DeleteSnapshot\",\n\t\t\t\t\"ec2:DeleteTags\",\n\t\t\t\t\"ec2:DeleteVolume\",\n\t\t\t\t\"ec2:DescribeInstances\",\n\t\t\t\t\"ec2:DescribeSnapshots\",\n\t\t\t\t\"ec2:DescribeTags\",\n\t\t\t\t\"ec2:DescribeVolumes\",\n\t\t\t\t\"ec2:DescribeVolumesModifications\",\n\t\t\t\t\"ec2:DetachVolume\",\n\t\t\t\t\"ec2:ModifyVolume\"\n\t\t\t],\n\t\t\t\"Resource\":
+                              \"*\"\n\t\t}\n\t]\n}"
+                            maxLength: 2048
                             type: string
                         required:
                         - controlPlaneOperatorARN
@@ -173,10 +348,12 @@ spec:
                 - aws
                 type: object
               privateSubnetIds:
-                description: PrivateSubnetIds is a comma-separated list of private
-                  subnet IDs.
-                minLength: 1
-                type: string
+                description: PrivateSubnetIDs is the list of private subnet IDs for
+                  worker nodes.
+                items:
+                  type: string
+                minItems: 1
+                type: array
               region:
                 description: Region is the AWS region (e.g. us-east-1).
                 minLength: 1
@@ -186,9 +363,16 @@ spec:
                   control plane.
                 properties:
                   image:
-                    description: Image is the release payload image reference.
+                    description: |-
+                      image is the image pullspec of an OCP release payload image.
+                      See https://quay.io/repository/openshift-release-dev/ocp-release?tab=tags for a list of available images.
+                    maxLength: 253
                     minLength: 1
                     type: string
+                    x-kubernetes-validations:
+                    - message: Image must start with a word character (letters, digits,
+                        or underscores) and contain no white spaces
+                      rule: self.matches('^(\\w+\\S+)$')
                 required:
                 - image
                 type: object
@@ -202,7 +386,7 @@ spec:
                 minLength: 1
                 type: string
               workerSecurityGroupId:
-                description: WorkerSecurityGroupId is the security group ID for worker
+                description: WorkerSecurityGroupID is the security group ID for worker
                   nodes.
                 pattern: ^sg-[a-z0-9]+$
                 type: string
@@ -227,6 +411,15 @@ spec:
             - workerSecurityGroupId
             - zone
             type: object
+            x-kubernetes-validations:
+            - message: spec.accountId is immutable
+              rule: self.accountId == oldSelf.accountId
+            - message: spec.region is immutable
+              rule: self.region == oldSelf.region
+            - message: spec.vpcId is immutable
+              rule: self.vpcId == oldSelf.vpcId
+            - message: spec.oidcIssuerURL is immutable
+              rule: self.oidcIssuerURL == oldSelf.oidcIssuerURL
           status:
             description: ClusterStatus defines the observed state of a Cluster.
             properties:
@@ -303,6 +496,11 @@ spec:
                 type: integer
               phase:
                 description: Phase summarizes the cluster's lifecycle state.
+                enum:
+                - WaitingForPlacement
+                - Provisioning
+                - Ready
+                - Deleting
                 type: string
               placementRef:
                 description: PlacementRef references the Placement that assigned this

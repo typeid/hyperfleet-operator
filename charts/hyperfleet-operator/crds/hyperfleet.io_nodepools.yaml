@@ -11,6 +11,8 @@ spec:
     kind: NodePool
     listKind: NodePoolList
     plural: nodepools
+    shortNames:
+    - hfnp
     singular: nodepool
   scope: Namespaced
   versions:
@@ -63,17 +65,135 @@ spec:
                 description: Management configures node lifecycle management.
                 properties:
                   autoRepair:
-                    description: AutoRepair enables automatic replacement of unhealthy
-                      nodes.
+                    default: false
+                    description: |-
+                      autoRepair specifies whether health checks should be enabled for machines in the NodePool. The default is false.
+                      Enabling this feature will cause the controller to automatically delete unhealthy machines.
+                      The unhealthy criteria is reserved for the controller implementation and subject to change.
+                      But generally it's determined by checking the Node ready condition is true and a timeout that might vary depending on the platform provider.
+                      AutoRepair will no-op when more than 2 Nodes are unhealthy at the same time. Giving time for the cluster to stabilize or to the user to manually intervene.
                     type: boolean
+                  inPlace:
+                    description: inPlace is the configuration for in-place upgrades.
+                    properties:
+                      maxUnavailable:
+                        anyOf:
+                        - type: integer
+                        - type: string
+                        description: |-
+                          maxUnavailable is the maximum number of nodes that can be unavailable
+                          during the update.
+
+                          Value can be an absolute number (ex: 5) or a percentage of desired nodes
+                          (ex: 10%).
+
+                          Absolute number is calculated from percentage by rounding down.
+
+                          Defaults to 1.
+
+                          Example: when this is set to 30%, a max of 30% of the nodes can be made
+                          unschedulable/unavailable immediately when the update starts. Once a set
+                          of nodes is updated, more nodes can be made unschedulable for update,
+                          ensuring that the total number of nodes schedulable at all times during
+                          the update is at least 70% of desired nodes.
+                        x-kubernetes-int-or-string: true
+                    type: object
+                  replace:
+                    default:
+                      rollingUpdate:
+                        maxSurge: 1
+                        maxUnavailable: 0
+                      strategy: RollingUpdate
+                    description: |-
+                      replace is the configuration for rolling upgrades.
+                      It defaults to a RollingUpdate strategy with maxSurge of 1 and maxUnavailable of 0.
+                    properties:
+                      rollingUpdate:
+                        description: |-
+                          rollingUpdate specifies a rolling update strategy which upgrades nodes by
+                          creating new nodes and deleting the old ones.
+                        properties:
+                          maxSurge:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            description: |-
+                              maxSurge is the maximum number of nodes that can be provisioned above the
+                              desired number of nodes.
+
+                              Value can be an absolute number (ex: 5) or a percentage of desired nodes
+                              (ex: 10%).
+
+                              Absolute number is calculated from percentage by rounding up.
+
+                              This can not be 0 if MaxUnavailable is 0.
+
+                              Defaults to 1.
+
+                              Example: when this is set to 30%, new nodes can be provisioned immediately
+                              when the rolling update starts, such that the total number of old and new
+                              nodes do not exceed 130% of desired nodes. Once old nodes have been
+                              deleted, new nodes can be provisioned, ensuring that total number of nodes
+                              running at any time during the update is at most 130% of desired nodes.
+                            x-kubernetes-int-or-string: true
+                          maxUnavailable:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            description: |-
+                              maxUnavailable is the maximum number of nodes that can be unavailable
+                              during the update.
+
+                              Value can be an absolute number (ex: 5) or a percentage of desired nodes
+                              (ex: 10%).
+
+                              Absolute number is calculated from percentage by rounding down.
+
+                              This can not be 0 if MaxSurge is 0.
+
+                              Defaults to 0.
+
+                              Example: when this is set to 30%, old nodes can be deleted down to 70% of
+                              desired nodes immediately when the rolling update starts. Once new nodes
+                              are ready, more old nodes be deleted, followed by provisioning new nodes,
+                              ensuring that the total number of nodes available at all times during the
+                              update is at least 70% of desired nodes.
+                            x-kubernetes-int-or-string: true
+                        type: object
+                      strategy:
+                        description: |-
+                          strategy is the node replacement strategy for nodes in the pool.
+                          In can be either "RollingUpdate" or "OnDelete". RollingUpdate will rollout Nodes honoring maxSurge and maxUnavailable.
+                          OnDelete provide more granular control and will replace nodes as the old ones are manually deleted.
+                        enum:
+                        - RollingUpdate
+                        - OnDelete
+                        type: string
+                    type: object
+                    x-kubernetes-validations:
+                    - message: The 'rollingUpdate' field can only be set when 'strategy'
+                        is 'RollingUpdate'
+                      rule: '!has(self.rollingUpdate) || self.strategy == ''RollingUpdate'''
                   upgradeType:
-                    description: UpgradeType controls how nodes are upgraded (Replace
-                      or InPlace).
+                    description: |-
+                      upgradeType specifies the type of strategy for handling upgrades.
+                      This can be either "Replace" or "InPlace".
+                      "Replace" will update Nodes by recreating the underlying instances.
+                      "InPlace" will update Nodes by applying changes to the existing instances. This might or might not result in a reboot.
                     enum:
                     - Replace
                     - InPlace
                     type: string
+                    x-kubernetes-validations:
+                    - message: UpgradeType is immutable
+                      rule: self == oldSelf
+                required:
+                - upgradeType
                 type: object
+                x-kubernetes-validations:
+                - message: The 'inPlace' field can only be set when 'upgradeType'
+                    is 'InPlace'
+                  rule: '!has(self.inPlace) || self.upgradeType == ''InPlace'''
               platform:
                 description: Platform contains cloud-provider-specific node pool configuration.
                 properties:
@@ -92,20 +212,32 @@ spec:
                       rootVolume:
                         description: RootVolume configures the root EBS volume.
                         properties:
+                          encrypted:
+                            description: encrypted indicates whether the EBS volume
+                              should be encrypted or not.
+                            type: boolean
+                          encryptionKey:
+                            description: encryptionKey is the KMS key to use for volume
+                              encryption.
+                            maxLength: 2048
+                            type: string
+                          iops:
+                            description: |-
+                              iops is the number of IOPS requested for the disk. This is only valid
+                              for type io1.
+                            format: int64
+                            type: integer
                           size:
-                            description: Size is the volume size in GiB.
-                            format: int32
-                            minimum: 1
+                            description: |-
+                              size is the size of the volume in gibibytes (GiB).
+
+                              Must be greater than the image snapshot size or 8 (whichever is greater).
+                            format: int64
+                            minimum: 8
                             type: integer
                           type:
-                            description: Type is the EBS volume type (e.g. gp3).
-                            enum:
-                            - gp2
-                            - gp3
-                            - io1
-                            - io2
-                            - st1
-                            - sc1
+                            description: type is the type of volume to provision.
+                            maxLength: 255
                             type: string
                         required:
                         - size
@@ -115,11 +247,12 @@ spec:
                         description: SecurityGroups is the list of security group
                           IDs for worker nodes.
                         items:
+                          pattern: ^sg-[a-z0-9]+$
                           type: string
                         minItems: 1
                         type: array
                       subnetId:
-                        description: SubnetId is the subnet where nodes are launched.
+                        description: SubnetID is the subnet where nodes are launched.
                         pattern: ^subnet-[a-z0-9]+$
                         type: string
                     required:
@@ -137,9 +270,16 @@ spec:
                   nodes.
                 properties:
                   image:
-                    description: Image is the release payload image reference.
+                    description: |-
+                      image is the image pullspec of an OCP release payload image.
+                      See https://quay.io/repository/openshift-release-dev/ocp-release?tab=tags for a list of available images.
+                    maxLength: 253
                     minLength: 1
                     type: string
+                    x-kubernetes-validations:
+                    - message: Image must start with a word character (letters, digits,
+                        or underscores) and contain no white spaces
+                      rule: self.matches('^(\\w+\\S+)$')
                 required:
                 - image
                 type: object
@@ -155,6 +295,9 @@ spec:
             - release
             - replicas
             type: object
+            x-kubernetes-validations:
+            - message: spec.clusterRef is immutable
+              rule: self.clusterRef == oldSelf.clusterRef
           status:
             description: NodePoolStatus defines the observed state of a NodePool.
             properties:
@@ -227,6 +370,11 @@ spec:
                 type: integer
               phase:
                 description: Phase summarizes the node pool's lifecycle state.
+                enum:
+                - WaitingForCluster
+                - Provisioning
+                - Ready
+                - Deleting
                 type: string
             type: object
         required:

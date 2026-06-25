@@ -27,6 +27,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	hypershiftv1beta1 "github.com/openshift/hypershift/api/hypershift/v1beta1"
 	hyperfleetv1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
 	"github.com/typeid/hyperfleet-operator/internal/dynamo"
 )
@@ -102,7 +103,7 @@ var _ = Describe("Cluster Controller", func() {
 
 			var updated hyperfleetv1alpha1.Cluster
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: clusterName}, &updated)).To(Succeed())
-			Expect(updated.Status.Phase).To(Equal("WaitingForPlacement"))
+			Expect(updated.Status.Phase).To(Equal(hyperfleetv1alpha1.ClusterPhaseWaitingForPlacement))
 		})
 
 		It("should create DynamoDB desires when Placement is Bound", func() {
@@ -121,7 +122,7 @@ var _ = Describe("Cluster Controller", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, placement)).To(Succeed())
-			placement.Status.Phase = "Bound"
+			placement.Status.Phase = hyperfleetv1alpha1.PlacementPhaseBound
 			Expect(k8sClient.Status().Update(ctx, placement)).To(Succeed())
 
 			fd := &fakeDynamo{}
@@ -212,6 +213,10 @@ var _ = Describe("Cluster Controller", func() {
 			// Verify the Placement was deleted.
 			err = k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: clusterName + "-placement"}, &p)
 			Expect(err).To(HaveOccurred())
+
+			// Verify ReadDesire spec was cleaned up from DynamoDB.
+			Expect(fd.deletedSpecs).To(HaveLen(1))
+			Expect(fd.deletedSpecs[0]).To(ContainSubstring("-readdesires"))
 		})
 
 		It("should handle not-found gracefully", func() {
@@ -242,11 +247,11 @@ func newTestCluster(name string) *hyperfleetv1alpha1.Cluster {
 			Zone:                      "us-east-1a",
 			BaseDomain:                "example.com",
 			VpcID:                     "vpc-abc123",
-			PrivateSubnetIds:          "subnet-1,subnet-2",
+			PrivateSubnetIDs:          []string{"subnet-1", "subnet-2"},
 			WorkerInstanceProfileName: "worker-profile",
-			WorkerSecurityGroupId:     "sg-abc123",
+			WorkerSecurityGroupID:     "sg-abc123",
 			OIDCIssuerURL:             "https://oidc.example.com/cluster-01",
-			Release:                   hyperfleetv1alpha1.ReleaseSpec{Image: "quay.io/openshift-release-dev/ocp-release:4.17.0-ec.2-x86_64"},
+			Release:                   hypershiftv1beta1.Release{Image: "quay.io/openshift-release-dev/ocp-release:4.17.0-ec.2-x86_64"},
 			Networking: hyperfleetv1alpha1.NetworkingSpec{
 				ClusterNetwork: []hyperfleetv1alpha1.NetworkEntry{{CIDR: "10.128.0.0/14"}},
 				ServiceNetwork: []hyperfleetv1alpha1.NetworkEntry{{CIDR: "172.30.0.0/16"}},
@@ -254,7 +259,7 @@ func newTestCluster(name string) *hyperfleetv1alpha1.Cluster {
 			},
 			Platform: hyperfleetv1alpha1.PlatformSpec{
 				AWS: hyperfleetv1alpha1.AWSPlatformSpec{
-					Roles: hyperfleetv1alpha1.AWSRolesSpec{
+					Roles: hypershiftv1beta1.AWSRolesRef{
 						ControlPlaneOperatorARN: "arn:aws:iam::123456789012:role/cpo",
 						IngressARN:              "arn:aws:iam::123456789012:role/ingress",
 						ImageRegistryARN:        "arn:aws:iam::123456789012:role/registry",

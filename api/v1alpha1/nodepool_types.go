@@ -17,11 +17,24 @@ limitations under the License.
 package v1alpha1
 
 import (
+	hypershiftv1beta1 "github.com/openshift/hypershift/api/hypershift/v1beta1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
+// NodePoolPhase represents the lifecycle phase of a NodePool.
+// +kubebuilder:validation:Enum=WaitingForCluster;Provisioning;Ready;Deleting
+type NodePoolPhase string
+
+const (
+	NodePoolPhaseWaitingForCluster NodePoolPhase = "WaitingForCluster"
+	NodePoolPhaseProvisioning      NodePoolPhase = "Provisioning"
+	NodePoolPhaseReady             NodePoolPhase = "Ready"
+	NodePoolPhaseDeleting          NodePoolPhase = "Deleting"
+)
+
 // NodePoolSpec defines the desired state of a NodePool.
+// +kubebuilder:validation:XValidation:rule="self.clusterRef == oldSelf.clusterRef",message="spec.clusterRef is immutable"
 type NodePoolSpec struct {
 	// ClusterRef is the name of the Cluster CR this node pool belongs to.
 	// +kubebuilder:validation:MinLength=1
@@ -32,25 +45,13 @@ type NodePoolSpec struct {
 	Replicas int32 `json:"replicas"`
 
 	// Management configures node lifecycle management.
-	Management NodePoolManagementSpec `json:"management"`
+	Management hypershiftv1beta1.NodePoolManagement `json:"management"`
 
 	// Release specifies the OpenShift release for the worker nodes.
-	Release ReleaseSpec `json:"release"`
+	Release hypershiftv1beta1.Release `json:"release"`
 
 	// Platform contains cloud-provider-specific node pool configuration.
 	Platform NodePoolPlatformSpec `json:"platform"`
-}
-
-// NodePoolManagementSpec configures node lifecycle behaviour.
-type NodePoolManagementSpec struct {
-	// AutoRepair enables automatic replacement of unhealthy nodes.
-	// +optional
-	AutoRepair bool `json:"autoRepair,omitempty"`
-
-	// UpgradeType controls how nodes are upgraded (Replace or InPlace).
-	// +kubebuilder:validation:Enum=Replace;InPlace
-	// +optional
-	UpgradeType string `json:"upgradeType,omitempty"`
 }
 
 // NodePoolPlatformSpec contains cloud-provider-specific node pool configuration.
@@ -66,11 +67,11 @@ type AWSNodePoolSpec struct {
 	InstanceType string `json:"instanceType"`
 
 	// RootVolume configures the root EBS volume.
-	RootVolume RootVolumeSpec `json:"rootVolume"`
+	RootVolume hypershiftv1beta1.Volume `json:"rootVolume"`
 
-	// SubnetId is the subnet where nodes are launched.
+	// SubnetID is the subnet where nodes are launched.
 	// +kubebuilder:validation:Pattern=`^subnet-[a-z0-9]+$`
-	SubnetId string `json:"subnetId"`
+	SubnetID string `json:"subnetId"`
 
 	// InstanceProfile is the IAM instance profile for worker nodes.
 	// +kubebuilder:validation:MinLength=1
@@ -78,18 +79,8 @@ type AWSNodePoolSpec struct {
 
 	// SecurityGroups is the list of security group IDs for worker nodes.
 	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:items:Pattern=`^sg-[a-z0-9]+$`
 	SecurityGroups []string `json:"securityGroups"`
-}
-
-// RootVolumeSpec configures the root EBS volume for worker nodes.
-type RootVolumeSpec struct {
-	// Size is the volume size in GiB.
-	// +kubebuilder:validation:Minimum=1
-	Size int32 `json:"size"`
-
-	// Type is the EBS volume type (e.g. gp3).
-	// +kubebuilder:validation:Enum=gp2;gp3;io1;io2;st1;sc1
-	Type string `json:"type"`
 }
 
 // NodePoolStatus defines the observed state of a NodePool.
@@ -103,7 +94,7 @@ type NodePoolStatus struct {
 
 	// Phase summarizes the node pool's lifecycle state.
 	// +optional
-	Phase string `json:"phase,omitempty"`
+	Phase NodePoolPhase `json:"phase,omitempty"`
 
 	// ObservedGeneration is the most recent generation observed by the controller.
 	// +optional
@@ -112,7 +103,7 @@ type NodePoolStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Namespaced
+// +kubebuilder:resource:scope=Namespaced,shortName=hfnp
 // +kubebuilder:printcolumn:name="Cluster",type=string,JSONPath=".spec.clusterRef"
 // +kubebuilder:printcolumn:name="Replicas",type=integer,JSONPath=".spec.replicas"
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=".status.phase"

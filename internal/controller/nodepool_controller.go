@@ -35,11 +35,11 @@ import (
 
 	hyperfleetv1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
 	"github.com/typeid/hyperfleet-operator/internal/dynamo"
-	"github.com/typeid/hyperfleet-operator/internal/manifest"
+	"github.com/typeid/hyperfleet-operator/internal/render"
 )
 
 const (
-	nodePoolFinalizer = "hyperfleet.io/operator"
+	nodePoolFinalizer = "hyperfleet.io/nodepool"
 )
 
 // NodePoolReconciler reconciles a NodePool object by creating DynamoDB desires
@@ -80,7 +80,7 @@ func (r *NodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	var cluster hyperfleetv1alpha1.Cluster
 	if err := r.Get(ctx, types.NamespacedName{Namespace: nodePool.Namespace, Name: nodePool.Spec.ClusterRef}, &cluster); err != nil {
 		log.Info("Waiting for parent Cluster", "clusterRef", nodePool.Spec.ClusterRef)
-		r.setPhase(ctx, &nodePool, "WaitingForCluster")
+		r.setPhase(ctx, &nodePool, hyperfleetv1alpha1.NodePoolPhaseWaitingForCluster)
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
@@ -94,19 +94,22 @@ func (r *NodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	specsPrefix := dynamo.SpecsPrefix(mc)
 	statusPrefix := dynamo.StatusPrefix(mc)
 
-	// Generate NodePool manifest and create ApplyDesire.
-	m := manifest.NodePoolManifest(&nodePool, &cluster)
-	ns := ""
-	if obj, ok := m.Object["metadata"].(map[string]any); ok {
-		if nsVal, ok := obj["namespace"].(string); ok {
-			ns = nsVal
-		}
-	}
+	// Generate NodePool resource and create ApplyDesire.
+	m := render.NodePoolResource(&nodePool, &cluster)
+	ns := m.Namespace
 
 	docID := dynamo.NewDocumentID(taskKey, m.Group, m.Version, m.Resource, ns, m.Name)
+	readDocID := dynamo.NewDocumentID(taskKey+"-read", m.Group, m.Version, m.Resource, ns, m.Name)
+
+	// Skip full reconcile when spec hasn't changed (status-only update).
+	if nodePool.Generation == nodePool.Status.ObservedGeneration {
+		r.updateStatusFromDynamo(ctx, &nodePool, statusPrefix, docID, readDocID)
+		return ctrl.Result{RequeueAfter: statusRefreshDelay}, nil
+	}
+
 	content, err := json.Marshal(m.Object)
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("marshal nodepool manifest: %w", err)
+		return ctrl.Result{}, fmt.Errorf("marshal nodepool resource: %w", err)
 	}
 
 	desire := &dynamo.ApplyDesire{
@@ -128,11 +131,32 @@ func (r *NodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, fmt.Errorf("put apply desire: %w", err)
 	}
 
-	// Read status feedback from DynamoDB.
-	r.updateStatusFromDynamo(ctx, &nodePool, statusPrefix, docID)
+	// Create ReadDesire for NodePool status feedback.
+	readDesire := &dynamo.ReadDesire{
+		DynamoDBMetadata: dynamo.DynamoDBMetadata{DocumentID: readDocID},
+		Spec: dynamo.ReadDesireSpec{
+			ManagementCluster: mc,
+			ClusterID:         cluster.Name,
+			TargetItem: dynamo.ResourceReference{
+				Group:     m.Group,
+				Version:   m.Version,
+				Resource:  m.Resource,
+				Namespace: ns,
+				Name:      m.Name,
+			},
+		},
+	}
+	if err := r.Dynamo.PutReadDesire(ctx, specsPrefix, readDesire); err != nil {
+		return ctrl.Result{}, fmt.Errorf("put read desire: %w", err)
+	}
 
-	if nodePool.Status.Phase == "" || nodePool.Status.Phase == "WaitingForCluster" {
-		r.setPhase(ctx, &nodePool, "Provisioning")
+	// Read status feedback from DynamoDB.
+	r.updateStatusFromDynamo(ctx, &nodePool, statusPrefix, docID, readDocID)
+
+	// Re-read to see phase set by updateStatusFromDynamo.
+	_ = r.Get(ctx, client.ObjectKeyFromObject(&nodePool), &nodePool)
+	if nodePool.Status.Phase == "" || nodePool.Status.Phase == hyperfleetv1alpha1.NodePoolPhaseWaitingForCluster {
+		r.setPhase(ctx, &nodePool, hyperfleetv1alpha1.NodePoolPhaseProvisioning)
 	}
 
 	return ctrl.Result{RequeueAfter: statusRefreshDelay}, nil
@@ -146,7 +170,7 @@ func (r *NodePoolReconciler) reconcileDelete(ctx context.Context, nodePool *hype
 	}
 
 	log.Info("NodePool deleting", "nodePool", nodePool.Name)
-	r.setPhase(ctx, nodePool, "Deleting")
+	r.setPhase(ctx, nodePool, hyperfleetv1alpha1.NodePoolPhaseDeleting)
 
 	// Look up parent Cluster for MC target.
 	var cluster hyperfleetv1alpha1.Cluster
@@ -155,13 +179,8 @@ func (r *NodePoolReconciler) reconcileDelete(ctx context.Context, nodePool *hype
 		specsPrefix := dynamo.SpecsPrefix(mc)
 		statusPrefix := dynamo.StatusPrefix(mc)
 
-		m := manifest.NodePoolManifest(nodePool, &cluster)
-		ns := ""
-		if obj, ok := m.Object["metadata"].(map[string]any); ok {
-			if nsVal, ok := obj["namespace"].(string); ok {
-				ns = nsVal
-			}
-		}
+		m := render.NodePoolResource(nodePool, &cluster)
+		ns := m.Namespace
 
 		docID := dynamo.NewDocumentID(taskKey+"-delete", m.Group, m.Version, m.Resource, ns, m.Name)
 
@@ -187,23 +206,58 @@ func (r *NodePoolReconciler) reconcileDelete(ctx context.Context, nodePool *hype
 			log.Info("Waiting for DeleteDesire confirmation", "nodePool", nodePool.Name)
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
+
+		// Clean up the NodePool ReadDesire spec from DynamoDB.
+		readDocID := dynamo.NewDocumentID(taskKey+"-read", m.Group, m.Version, m.Resource, ns, m.Name)
+		if err := r.Dynamo.DeleteDesireSpec(ctx, specsPrefix, "-readdesires", readDocID); err != nil {
+			log.Error(err, "failed to clean up ReadDesire spec", "nodepool", m.Name)
+		}
 	}
 
-	controllerutil.RemoveFinalizer(nodePool, nodePoolFinalizer)
-	if err := r.Update(ctx, nodePool); err != nil {
+	// Remove finalizer with RetryOnConflict to handle stale resourceVersion.
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var latest hyperfleetv1alpha1.NodePool
+		if err := r.Get(ctx, client.ObjectKeyFromObject(nodePool), &latest); err != nil {
+			return err
+		}
+		if !controllerutil.ContainsFinalizer(&latest, nodePoolFinalizer) {
+			return nil
+		}
+		controllerutil.RemoveFinalizer(&latest, nodePoolFinalizer)
+		return r.Update(ctx, &latest)
+	}); err != nil {
 		return ctrl.Result{}, fmt.Errorf("remove finalizer: %w", err)
 	}
 
 	return ctrl.Result{}, nil
 }
 
-func (r *NodePoolReconciler) updateStatusFromDynamo(ctx context.Context, nodePool *hyperfleetv1alpha1.NodePool, statusPrefix, docID string) {
+func (r *NodePoolReconciler) updateStatusFromDynamo(ctx context.Context, nodePool *hyperfleetv1alpha1.NodePool, statusPrefix, applyDocID, readDocID string) {
 	log := logf.FromContext(ctx)
 
-	applyStatus, err := r.Dynamo.GetApplyDesireStatus(ctx, statusPrefix, docID)
-	if err != nil {
-		log.V(1).Info("ApplyDesire status not yet available", "error", err)
-		return
+	applyStatus, applyErr := r.Dynamo.GetApplyDesireStatus(ctx, statusPrefix, applyDocID)
+	if applyErr != nil {
+		log.V(1).Info("ApplyDesire status not yet available", "error", applyErr)
+	}
+
+	readStatus, readErr := r.Dynamo.GetReadDesireStatus(ctx, statusPrefix, readDocID)
+	if readErr != nil {
+		log.V(1).Info("ReadDesire status not yet available", "error", readErr)
+	}
+
+	// Parse HyperShift NodePool conditions from ReadDesire KubeContent.
+	var npConditions []metav1.Condition
+	if readStatus != nil && readStatus.KubeContent != nil {
+		var np struct {
+			Status struct {
+				Conditions []metav1.Condition `json:"conditions"`
+			} `json:"status"`
+		}
+		if err := json.Unmarshal(readStatus.KubeContent, &np); err != nil {
+			log.Error(err, "Failed to unmarshal NodePool status")
+		} else {
+			npConditions = np.Status.Conditions
+		}
 	}
 
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -214,7 +268,7 @@ func (r *NodePoolReconciler) updateStatusFromDynamo(ctx context.Context, nodePoo
 			}
 			return err
 		}
-		if applyStatus.AppliedResourceGeneration > 0 {
+		if applyStatus != nil && applyStatus.AppliedResourceGeneration > 0 {
 			meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
 				Type:               "Applied",
 				Status:             metav1.ConditionTrue,
@@ -223,6 +277,14 @@ func (r *NodePoolReconciler) updateStatusFromDynamo(ctx context.Context, nodePoo
 				ObservedGeneration: latest.Generation,
 			})
 		}
+		for _, cond := range npConditions {
+			if cond.Type == "Ready" {
+				meta.SetStatusCondition(&latest.Status.Conditions, cond)
+			}
+		}
+		if meta.IsStatusConditionTrue(latest.Status.Conditions, "Ready") {
+			latest.Status.Phase = hyperfleetv1alpha1.NodePoolPhaseReady
+		}
 		latest.Status.ObservedGeneration = latest.Generation
 		return r.Status().Update(ctx, &latest)
 	}); err != nil {
@@ -230,7 +292,7 @@ func (r *NodePoolReconciler) updateStatusFromDynamo(ctx context.Context, nodePoo
 	}
 }
 
-func (r *NodePoolReconciler) setPhase(ctx context.Context, nodePool *hyperfleetv1alpha1.NodePool, phase string) {
+func (r *NodePoolReconciler) setPhase(ctx context.Context, nodePool *hyperfleetv1alpha1.NodePool, phase hyperfleetv1alpha1.NodePoolPhase) {
 	if nodePool.Status.Phase == phase {
 		return
 	}

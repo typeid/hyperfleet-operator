@@ -30,14 +30,7 @@ The operator connects to fleet-db's kube-apiserver to watch/update CRDs. Authent
 
 ### DynamoDB
 
-The operator reads and writes DynamoDB tables using the same IAM role. Required permissions per management cluster:
-
-| Action | Tables |
-| --- | --- |
-| `dynamodb:PutItem` | `{mc}-specs-applydesires`, `{mc}-specs-deletedesires`, `{mc}-specs-readdesires` |
-| `dynamodb:GetItem` | `{mc}-status-applydesires`, `{mc}-status-deletedesires`, `{mc}-status-readdesires` |
-
-The IAM role should **not** have write access to status tables or read access to specs tables — that is kube-applier-aws's domain.
+The operator reads and writes DynamoDB tables using the same IAM role. See [docs/quickstart.md](docs/quickstart.md#dynamodb) for the full permissions table and table setup.
 
 ## Contributing
 

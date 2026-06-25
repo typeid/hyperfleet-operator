@@ -16,13 +16,23 @@ spec:
         {{- include "hyperfleet-operator.selectorLabels" . | nindent 8 }}
     spec:
       serviceAccountName: {{ include "hyperfleet-operator.serviceAccountName" . }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: manager
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - "ALL"
           args:
-            - --aws-region={{ .Values.awsRegion }}
-            - --fleet-db-cluster-name={{ .Values.fleetDBClusterName }}
+            - --aws-region={{ required "awsRegion is required" .Values.awsRegion }}
+            - --fleet-db-cluster-name={{ required "fleetDBClusterName is required" .Values.fleetDBClusterName }}
             - --mc-config=/etc/hyperfleet/clusters.yaml
             {{- if .Values.leaderElection.enabled }}
             - --leader-elect=true

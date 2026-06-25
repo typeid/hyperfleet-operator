@@ -21,12 +21,24 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
+// PlacementPhase represents the lifecycle phase of a Placement.
+// +kubebuilder:validation:Enum=Pending;Bound
+type PlacementPhase string
+
+const (
+	PlacementPhasePending PlacementPhase = "Pending"
+	PlacementPhaseBound   PlacementPhase = "Bound"
+)
+
 // PlacementSpec defines the desired placement of a Cluster on a management cluster.
+// +kubebuilder:validation:XValidation:rule="self.clusterRef == oldSelf.clusterRef",message="spec.clusterRef is immutable"
 type PlacementSpec struct {
 	// ClusterRef is the name of the Cluster CR this placement is for.
+	// +kubebuilder:validation:MinLength=1
 	ClusterRef string `json:"clusterRef"`
 
 	// ManagementCluster is the target management cluster ID (e.g. mc01).
+	// +kubebuilder:validation:MinLength=1
 	ManagementCluster string `json:"managementCluster"`
 }
 
@@ -41,7 +53,7 @@ type PlacementStatus struct {
 
 	// Phase summarizes the placement's state: Pending or Bound.
 	// +optional
-	Phase string `json:"phase,omitempty"`
+	Phase PlacementPhase `json:"phase,omitempty"`
 
 	// ObservedGeneration is the most recent generation observed by the controller.
 	// +optional
@@ -50,7 +62,7 @@ type PlacementStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Namespaced
+// +kubebuilder:resource:scope=Namespaced,shortName=hfp
 // +kubebuilder:printcolumn:name="Cluster",type=string,JSONPath=".spec.clusterRef"
 // +kubebuilder:printcolumn:name="MC",type=string,JSONPath=".spec.managementCluster"
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=".status.phase"

@@ -1,11 +1,12 @@
-package manifest
+package render
 
 import (
 	"testing"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
+	hypershiftv1beta1 "github.com/openshift/hypershift/api/hypershift/v1beta1"
 	hyperfleetv1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func testCluster() *hyperfleetv1alpha1.Cluster {
@@ -18,9 +19,9 @@ func testCluster() *hyperfleetv1alpha1.Cluster {
 			Zone:             "us-east-1a",
 			BaseDomain:       "example.com",
 			VpcID:            "vpc-abc",
-			PrivateSubnetIds: "subnet-1",
+			PrivateSubnetIDs: []string{"subnet-1"},
 			OIDCIssuerURL:    "https://oidc.example.com/abc12345",
-			Release:          hyperfleetv1alpha1.ReleaseSpec{Image: "quay.io/ocp:4.17"},
+			Release:          hypershiftv1beta1.Release{Image: "quay.io/ocp:4.17"},
 			CreatorARN:       "arn:aws:iam::123456789012:user/admin",
 			Networking: hyperfleetv1alpha1.NetworkingSpec{
 				ClusterNetwork: []hyperfleetv1alpha1.NetworkEntry{{CIDR: "10.128.0.0/14"}},
@@ -29,7 +30,7 @@ func testCluster() *hyperfleetv1alpha1.Cluster {
 			},
 			Platform: hyperfleetv1alpha1.PlatformSpec{
 				AWS: hyperfleetv1alpha1.AWSPlatformSpec{
-					Roles: hyperfleetv1alpha1.AWSRolesSpec{
+					Roles: hypershiftv1beta1.AWSRolesRef{
 						ControlPlaneOperatorARN: "arn:cpo",
 						IngressARN:              "arn:ingress",
 						ImageRegistryARN:        "arn:registry",
@@ -44,15 +45,21 @@ func testCluster() *hyperfleetv1alpha1.Cluster {
 	}
 }
 
-func TestClusterManifestsCount(t *testing.T) {
-	manifests := ClusterManifests(testCluster())
-	if got := len(manifests); got != 7 {
-		t.Errorf("expected 7 manifests, got %d", got)
+func TestClusterResourcesCount(t *testing.T) {
+	resources, err := ClusterResources(testCluster())
+	if err != nil {
+		t.Fatalf("ClusterResources: %v", err)
+	}
+	if got := len(resources); got != 7 {
+		t.Errorf("expected 7 resources, got %d", got)
 	}
 }
 
-func TestClusterManifestsTypes(t *testing.T) {
-	manifests := ClusterManifests(testCluster())
+func TestClusterResourcesTypes(t *testing.T) {
+	resources, err := ClusterResources(testCluster())
+	if err != nil {
+		t.Fatalf("ClusterResources: %v", err)
+	}
 
 	expected := []struct {
 		resource string
@@ -68,11 +75,11 @@ func TestClusterManifestsTypes(t *testing.T) {
 	}
 
 	for i, e := range expected {
-		if manifests[i].Resource != e.resource {
-			t.Errorf("manifest[%d]: expected resource %q, got %q", i, e.resource, manifests[i].Resource)
+		if resources[i].Resource != e.resource {
+			t.Errorf("resource[%d]: expected resource %q, got %q", i, e.resource, resources[i].Resource)
 		}
-		if manifests[i].Name != e.name {
-			t.Errorf("manifest[%d]: expected name %q, got %q", i, e.name, manifests[i].Name)
+		if resources[i].Name != e.name {
+			t.Errorf("resource[%d]: expected name %q, got %q", i, e.name, resources[i].Name)
 		}
 	}
 }
@@ -94,48 +101,50 @@ func TestHash4(t *testing.T) {
 }
 
 func TestHostedClusterDNS(t *testing.T) {
-	manifests := ClusterManifests(testCluster())
+	resources, err := ClusterResources(testCluster())
+	if err != nil {
+		t.Fatalf("ClusterResources: %v", err)
+	}
 
-	var hc map[string]any
-	for _, m := range manifests {
+	var hc *hypershiftv1beta1.HostedCluster
+	for _, m := range resources {
 		if m.Resource == "hostedclusters" {
-			hc = m.Object
+			hc = m.Object.(*hypershiftv1beta1.HostedCluster)
 			break
 		}
 	}
 	if hc == nil {
-		t.Fatal("no hostedcluster manifest found")
+		t.Fatal("no hostedcluster resource found")
 	}
 
-	spec := hc["spec"].(map[string]any)
-
-	dns := spec["dns"].(map[string]string)
-	if got := dns["baseDomain"]; got != "abc1.example.com" {
+	if got := hc.Spec.DNS.BaseDomain; got != "abc1.example.com" {
 		t.Errorf("dns.baseDomain = %q, want %q", got, "abc1.example.com")
 	}
 
-	if got := spec["kubeAPIServerDNSName"]; got != "api.my-cluster.abc1.example.com" {
+	if got := hc.Spec.KubeAPIServerDNSName; got != "api.my-cluster.abc1.example.com" {
 		t.Errorf("kubeAPIServerDNSName = %q, want %q", got, "api.my-cluster.abc1.example.com")
 	}
 
-	if got := spec["issuerURL"]; got != "https://oidc.example.com/abc12345" {
+	if got := hc.Spec.IssuerURL; got != "https://oidc.example.com/abc12345" {
 		t.Errorf("issuerURL = %q, want %q", got, "https://oidc.example.com/abc12345")
 	}
 }
 
 func TestCreatorARNInAuthConfig(t *testing.T) {
-	manifests := ClusterManifests(testCluster())
+	resources, err := ClusterResources(testCluster())
+	if err != nil {
+		t.Fatalf("ClusterResources: %v", err)
+	}
 
-	var cm map[string]any
-	for _, m := range manifests {
+	var cm *corev1.ConfigMap
+	for _, m := range resources {
 		if m.Name == "aws-iam-auth-config" {
-			cm = m.Object
+			cm = m.Object.(*corev1.ConfigMap)
 			break
 		}
 	}
 
-	data := cm["data"].(map[string]string)
-	cfg := data["config.yaml"]
+	cfg := cm.Data["config.yaml"]
 	if cfg == "" {
 		t.Fatal("config.yaml is empty")
 	}

@@ -31,15 +31,17 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	hyperfleetv1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
 	"github.com/typeid/hyperfleet-operator/internal/dynamo"
-	"github.com/typeid/hyperfleet-operator/internal/manifest"
+	"github.com/typeid/hyperfleet-operator/internal/render"
 )
 
 const (
-	clusterFinalizer   = "hyperfleet.io/operator"
+	clusterFinalizer   = "hyperfleet.io/cluster"
 	statusRefreshDelay = 30 * time.Second
 	taskKey            = "hyperfleet-operator"
 )
@@ -86,12 +88,12 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: placementName}, &placement); err != nil {
 		if apierrors.IsNotFound(err) {
 			log.Info("Waiting for Placement", "cluster", cluster.Name)
-			r.setPhase(ctx, &cluster, "WaitingForPlacement")
+			r.setPhase(ctx, &cluster, hyperfleetv1alpha1.ClusterPhaseWaitingForPlacement)
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
 		return ctrl.Result{}, fmt.Errorf("get placement: %w", err)
 	}
-	if placement.Status.Phase != "Bound" {
+	if placement.Status.Phase != hyperfleetv1alpha1.PlacementPhaseBound {
 		log.Info("Placement not yet Bound", "placement", placementName)
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
@@ -100,20 +102,26 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	specsPrefix := dynamo.SpecsPrefix(mc)
 	statusPrefix := dynamo.StatusPrefix(mc)
 
-	// Generate the 7 cluster manifests and create ApplyDesires.
-	manifests := manifest.ClusterManifests(&cluster)
-	for _, m := range manifests {
-		ns := ""
-		if obj, ok := m.Object["metadata"].(map[string]any); ok {
-			if nsVal, ok := obj["namespace"].(string); ok {
-				ns = nsVal
-			}
-		}
+	// Skip full reconcile when spec hasn't changed (status-only update).
+	if cluster.Generation == cluster.Status.ObservedGeneration {
+		r.updateStatusFromDynamo(ctx, &cluster, statusPrefix,
+			dynamo.NewDocumentID(taskKey+"-read", "hypershift.openshift.io", "v1beta1", "hostedclusters",
+				fmt.Sprintf("clusters-%s", cluster.Name), cluster.Spec.Name))
+		return ctrl.Result{RequeueAfter: statusRefreshDelay}, nil
+	}
+
+	// Generate the 7 cluster resources and create ApplyDesires.
+	resources, err := render.ClusterResources(&cluster)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("render cluster resources: %w", err)
+	}
+	for _, m := range resources {
+		ns := m.Namespace
 
 		docID := dynamo.NewDocumentID(taskKey, m.Group, m.Version, m.Resource, ns, m.Name)
 		content, err := json.Marshal(m.Object)
 		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("marshal manifest %s: %w", m.Name, err)
+			return ctrl.Result{}, fmt.Errorf("marshal resource %s: %w", m.Name, err)
 		}
 
 		desire := &dynamo.ApplyDesire{
@@ -149,7 +157,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			Type:               "DesiresWritten",
 			Status:             metav1.ConditionTrue,
 			Reason:             "ApplyDesiresCreated",
-			Message:            fmt.Sprintf("Wrote %d ApplyDesires to DynamoDB", len(manifests)),
+			Message:            fmt.Sprintf("Wrote %d ApplyDesires to DynamoDB", len(resources)),
 			ObservedGeneration: latest.Generation,
 		})
 		return r.Status().Update(ctx, &latest)
@@ -183,8 +191,8 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	r.updateStatusFromDynamo(ctx, &cluster, statusPrefix, readDocID)
 
 	// Set phase to Provisioning if not yet available.
-	if cluster.Status.Phase == "" || cluster.Status.Phase == "WaitingForPlacement" {
-		r.setPhase(ctx, &cluster, "Provisioning")
+	if cluster.Status.Phase == "" || cluster.Status.Phase == hyperfleetv1alpha1.ClusterPhaseWaitingForPlacement {
+		r.setPhase(ctx, &cluster, hyperfleetv1alpha1.ClusterPhaseProvisioning)
 	}
 
 	return ctrl.Result{RequeueAfter: statusRefreshDelay}, nil
@@ -198,7 +206,7 @@ func (r *ClusterReconciler) reconcileDelete(ctx context.Context, cluster *hyperf
 	}
 
 	log.Info("Cluster deleting", "cluster", cluster.Name)
-	r.setPhase(ctx, cluster, "Deleting")
+	r.setPhase(ctx, cluster, hyperfleetv1alpha1.ClusterPhaseDeleting)
 
 	// Step 1: Delete all associated NodePools. Each NodePool has its own
 	// finalizer that creates a DeleteDesire before clearing, so we wait
@@ -227,8 +235,20 @@ func (r *ClusterReconciler) reconcileDelete(ctx context.Context, cluster *hyperf
 	}
 
 	// Step 2: Create DeleteDesire for the cluster namespace and wait for confirmation.
+	// Use PlacementRef from status; fall back to looking up the Placement directly
+	// to avoid skipping DynamoDB cleanup if the PlacementReconciler hasn't run yet.
+	mc := ""
 	if cluster.Status.PlacementRef != nil {
-		mc := cluster.Status.PlacementRef.ManagementCluster
+		mc = cluster.Status.PlacementRef.ManagementCluster
+	} else {
+		placementName := fmt.Sprintf("%s-placement", cluster.Name)
+		var placement hyperfleetv1alpha1.Placement
+		if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: placementName}, &placement); err == nil {
+			mc = placement.Spec.ManagementCluster
+		}
+	}
+
+	if mc != "" {
 		specsPrefix := dynamo.SpecsPrefix(mc)
 		statusPrefix := dynamo.StatusPrefix(mc)
 
@@ -258,6 +278,13 @@ func (r *ClusterReconciler) reconcileDelete(ctx context.Context, cluster *hyperf
 			log.Info("Waiting for DeleteDesire confirmation", "namespace", ns)
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
+
+		// Clean up the HostedCluster ReadDesire spec from DynamoDB.
+		hcName := cluster.Spec.Name
+		readDocID := dynamo.NewDocumentID(taskKey+"-read", "hypershift.openshift.io", "v1beta1", "hostedclusters", ns, hcName)
+		if err := r.Dynamo.DeleteDesireSpec(ctx, specsPrefix, "-readdesires", readDocID); err != nil {
+			log.Error(err, "failed to clean up ReadDesire spec", "hostedcluster", hcName)
+		}
 	}
 
 	// Step 3: Delete the Placement explicitly rather than relying on OwnerReference GC.
@@ -271,9 +298,18 @@ func (r *ClusterReconciler) reconcileDelete(ctx context.Context, cluster *hyperf
 		}
 	}
 
-	// Remove finalizer to let Kubernetes delete the CR.
-	controllerutil.RemoveFinalizer(cluster, clusterFinalizer)
-	if err := r.Update(ctx, cluster); err != nil {
+	// Remove finalizer with RetryOnConflict to handle stale resourceVersion.
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var latest hyperfleetv1alpha1.Cluster
+		if err := r.Get(ctx, client.ObjectKeyFromObject(cluster), &latest); err != nil {
+			return err
+		}
+		if !controllerutil.ContainsFinalizer(&latest, clusterFinalizer) {
+			return nil
+		}
+		controllerutil.RemoveFinalizer(&latest, clusterFinalizer)
+		return r.Update(ctx, &latest)
+	}); err != nil {
 		return ctrl.Result{}, fmt.Errorf("remove finalizer: %w", err)
 	}
 
@@ -330,8 +366,9 @@ func (r *ClusterReconciler) updateStatusFromDynamo(ctx context.Context, cluster 
 		if len(hc.Status.Version.History) > 0 {
 			latest.Status.Version = hc.Status.Version.History[0].Version
 		}
-		if meta.IsStatusConditionTrue(latest.Status.Conditions, "Available") {
-			latest.Status.Phase = "Ready"
+		if meta.IsStatusConditionTrue(latest.Status.Conditions, "Available") &&
+			!meta.IsStatusConditionTrue(latest.Status.Conditions, "Degraded") {
+			latest.Status.Phase = hyperfleetv1alpha1.ClusterPhaseReady
 		}
 		latest.Status.ObservedGeneration = latest.Generation
 		return r.Status().Update(ctx, &latest)
@@ -340,7 +377,7 @@ func (r *ClusterReconciler) updateStatusFromDynamo(ctx context.Context, cluster 
 	}
 }
 
-func (r *ClusterReconciler) setPhase(ctx context.Context, cluster *hyperfleetv1alpha1.Cluster, phase string) {
+func (r *ClusterReconciler) setPhase(ctx context.Context, cluster *hyperfleetv1alpha1.Cluster, phase hyperfleetv1alpha1.ClusterPhase) {
 	if cluster.Status.Phase == phase {
 		return
 	}
@@ -366,6 +403,23 @@ func (r *ClusterReconciler) setPhase(ctx context.Context, cluster *hyperfleetv1a
 func (r *ClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&hyperfleetv1alpha1.Cluster{}).
+		Watches(&hyperfleetv1alpha1.Placement{}, handler.EnqueueRequestsFromMapFunc(
+			func(ctx context.Context, obj client.Object) []reconcile.Request {
+				placement, ok := obj.(*hyperfleetv1alpha1.Placement)
+				if !ok {
+					return nil
+				}
+				if placement.Spec.ClusterRef == "" {
+					return nil
+				}
+				return []reconcile.Request{
+					{NamespacedName: types.NamespacedName{
+						Namespace: placement.Namespace,
+						Name:      placement.Spec.ClusterRef,
+					}},
+				}
+			},
+		)).
 		Named("cluster").
 		Complete(r)
 }
