@@ -164,6 +164,12 @@ var _ = BeforeSuite(func() {
 		Dynamo: dynamoCli,
 	}).SetupWithManager(mgr)).To(Succeed())
 
+	Expect((&controller.HyperFleetManifestReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		Dynamo: dynamoCli,
+	}).SetupWithManager(mgr)).To(Succeed())
+
 	go func() {
 		defer GinkgoRecover()
 		Expect(mgr.Start(ctx)).To(Succeed())
@@ -197,6 +203,44 @@ var _ = BeforeSuite(func() {
 						TableName: aws.String(statusTable),
 						Item: map[string]dynamodbtypes.AttributeValue{
 							"documentID": docID,
+						},
+						ConditionExpression: aws.String("attribute_not_exists(documentID)"),
+					})
+				}
+			}
+		}
+	}()
+
+	// Simulate kube-applier-aws: poll specs-readdesires and write status
+	// entries with fabricated KubeContent (a completed Job).
+	go func() {
+		defer GinkgoRecover()
+		specsTable := mc + "-specs-readdesires"
+		statusTable := mc + "-status-readdesires"
+		completedJob := []byte(`{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"e2e-job-abc123","namespace":"e2e-actions"},"status":{"succeeded":1,"startTime":"2026-06-25T10:00:00Z","completionTime":"2026-06-25T10:00:05Z"}}`)
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				out, err := dynamoDBCli.Scan(ctx, &dynamodb.ScanInput{
+					TableName: aws.String(specsTable),
+				})
+				if err != nil {
+					continue
+				}
+				for _, item := range out.Items {
+					docID, ok := item["documentID"]
+					if !ok {
+						continue
+					}
+					_, _ = dynamoDBCli.PutItem(ctx, &dynamodb.PutItemInput{
+						TableName: aws.String(statusTable),
+						Item: map[string]dynamodbtypes.AttributeValue{
+							"documentID":  docID,
+							"kubeContent": &dynamodbtypes.AttributeValueMemberB{Value: completedJob},
 						},
 						ConditionExpression: aws.String("attribute_not_exists(documentID)"),
 					})

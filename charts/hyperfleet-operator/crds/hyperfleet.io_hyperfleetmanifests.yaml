@@ -4,28 +4,28 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.21.0
-  name: placements.hyperfleet.io
+  name: hyperfleetmanifests.hyperfleet.io
 spec:
   group: hyperfleet.io
   names:
-    kind: Placement
-    listKind: PlacementList
-    plural: placements
+    kind: HyperFleetManifest
+    listKind: HyperFleetManifestList
+    plural: hyperfleetmanifests
     shortNames:
-    - hfp
-    singular: placement
+    - hfm
+    singular: hyperfleetmanifest
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.clusterRef
-      name: Cluster
-      type: string
     - jsonPath: .spec.managementCluster
       name: MC
       type: string
     - jsonPath: .status.phase
       name: Phase
       type: string
+    - jsonPath: .status.appliedResources
+      name: Resources
+      type: integer
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -33,8 +33,8 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          Placement is the Schema for the placements API.
-          It assigns a Cluster to a management cluster.
+          HyperFleetManifest is the Schema for the hyperfleetmanifests API.
+          It deploys arbitrary Kubernetes resources to a management cluster via DynamoDB desires.
         properties:
           apiVersion:
             description: |-
@@ -54,33 +54,66 @@ spec:
           metadata:
             type: object
           spec:
-            description: PlacementSpec defines the desired placement of a Cluster
-              on a management cluster.
+            description: HyperFleetManifestSpec defines a set of Kubernetes resources
+              to apply on a management cluster.
             properties:
-              clusterRef:
-                description: ClusterRef is the name of the Cluster CR this placement
-                  is for.
-                minLength: 1
-                type: string
               managementCluster:
-                description: ManagementCluster is the target management cluster ID
-                  (e.g. mc01).
+                description: ManagementCluster is the target MC ID (e.g. mc01).
                 minLength: 1
                 type: string
+              resources:
+                description: Resources is the list of Kubernetes resources to apply
+                  on the MC.
+                items:
+                  description: |-
+                    ResourceTemplate describes a single Kubernetes resource to apply.
+                    The controller extracts apiVersion, metadata.name, and metadata.namespace
+                    from Content automatically. Only the plural resource name is required
+                    separately because kind-to-resource conversion needs a RESTMapper
+                    that the operator doesn't have for MC-side resources.
+                  properties:
+                    content:
+                      description: |-
+                        Content is the full Kubernetes resource manifest.
+                        Must include apiVersion, kind, and metadata.name at minimum.
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
+                    resource:
+                      description: Resource is the plural resource name (e.g. "configmaps",
+                        "deployments").
+                      minLength: 1
+                      type: string
+                    watch:
+                      description: |-
+                        Watch creates a ReadDesire for this resource, mirroring its live state
+                        from the MC back into status.resourceStatuses via kube-applier-aws.
+                      type: boolean
+                  required:
+                  - content
+                  - resource
+                  type: object
+                minItems: 1
+                type: array
             required:
-            - clusterRef
             - managementCluster
+            - resources
             type: object
             x-kubernetes-validations:
-            - message: spec.clusterRef is immutable
-              rule: self.clusterRef == oldSelf.clusterRef
+            - message: spec.managementCluster is immutable
+              rule: self.managementCluster == oldSelf.managementCluster
           status:
-            description: PlacementStatus defines the observed state of a Placement.
+            description: HyperFleetManifestStatus defines the observed state of a
+              HyperFleetManifest.
             properties:
+              appliedResources:
+                description: AppliedResources is the number of resources written as
+                  ApplyDesires.
+                format: int32
+                type: integer
               conditions:
                 description: |-
-                  Conditions represent the latest observations of the placement's state.
-                  Known condition types: Bound.
+                  Conditions represent the latest observations of the manifest's state.
+                  Known condition types: DesiresWritten.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -145,12 +178,38 @@ spec:
                 format: int64
                 type: integer
               phase:
-                description: 'Phase summarizes the placement''s state: Pending or
-                  Bound.'
+                description: Phase summarizes the manifest's lifecycle state.
                 enum:
-                - Pending
-                - Bound
+                - Applied
+                - Deleting
                 type: string
+              resourceStatuses:
+                description: ResourceStatuses contains the mirrored live state of
+                  watched resources.
+                items:
+                  description: ResourceStatus holds the mirrored live state of a watched
+                    resource from the MC.
+                  properties:
+                    kubeContent:
+                      description: KubeContent is the full live Kubernetes object
+                        mirrored from the MC.
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
+                    name:
+                      description: Name is metadata.name of the watched resource.
+                      type: string
+                    namespace:
+                      description: Namespace is metadata.namespace (empty for cluster-scoped
+                        resources).
+                      type: string
+                    resource:
+                      description: Resource is the plural resource name (e.g. "jobs").
+                      type: string
+                  required:
+                  - name
+                  - resource
+                  type: object
+                type: array
             type: object
         required:
         - spec

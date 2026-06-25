@@ -97,6 +97,7 @@ sequenceDiagram
     CC->>DDB: Write DeleteDesire for namespace clusters-{clusterID}
     CC->>DDB: Poll status table for deletion confirmation
     CC->>CC: Requeue until confirmed
+    CC->>DDB: Delete ReadDesire spec for HostedCluster
 
     Note over CC: Step 3 — Delete Placement
     CC->>FDB: Delete Placement CR
@@ -108,6 +109,6 @@ sequenceDiagram
 ### Deletion Steps
 
 1. **NodePool cascade**: Lists all NodePools in the same namespace with matching `clusterRef`, deletes each one. Each NodePool has its own finalizer that writes a DeleteDesire before clearing. The controller requeues until all NodePools are fully gone.
-2. **Namespace DeleteDesire**: Writes a DeleteDesire for the `clusters-{clusterID}` namespace, which cascades deletion of all MC resources. Polls the `{mc}-status-deletedesires` table until kube-applier-aws confirms the deletion.
+2. **Namespace DeleteDesire**: Writes a DeleteDesire for the `clusters-{clusterID}` namespace, which cascades deletion of all MC resources. Polls the `{mc}-status-deletedesires` table until kube-applier-aws confirms the deletion. After confirmation, deletes the HostedCluster ReadDesire spec from DynamoDB.
 3. **Placement cleanup**: Deletes the Placement CR (last, after MC resources are confirmed gone).
 4. **Finalizer removal**: Removes the `hyperfleet.io/operator` finalizer, allowing Kubernetes to complete the CR deletion.

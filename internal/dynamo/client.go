@@ -3,6 +3,7 @@ package dynamo
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -11,6 +12,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	dynamodbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
+
+// ErrNotFound is returned when a desire item does not exist in DynamoDB.
+var ErrNotFound = errors.New("desire not found")
 
 const (
 	tableSuffixApplyDesires  = "-applydesires"
@@ -144,7 +148,7 @@ func (c *Client) getDesireStatus(ctx context.Context, table, documentID string, 
 		return fmt.Errorf("dynamodb get %s/%s: %w", table, documentID, err)
 	}
 	if len(result.Item) == 0 {
-		return fmt.Errorf("not found: %s/%s", table, documentID)
+		return fmt.Errorf("%w: %s/%s", ErrNotFound, table, documentID)
 	}
 
 	// Read kubeContent from the special top-level attribute if present.

@@ -145,6 +145,15 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := (&controller.HyperFleetManifestReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		Dynamo: dynamoClient,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "manifest")
+		os.Exit(1)
+	}
+
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "Failed to set up health check")
 		os.Exit(1)

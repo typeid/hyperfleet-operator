@@ -40,6 +40,12 @@ type fakeDynamo struct {
 	applyStatus *dynamo.ApplyDesireStatus
 	// Set deleteStatus to return a specific status from GetDeleteDesireStatus.
 	deleteStatus *dynamo.DeleteDesireStatus
+	// deletedSpecs tracks calls to DeleteDesireSpec (suffix/docID).
+	deletedSpecs []string
+	// Set applyErr to make PutApplyDesire return an error.
+	applyErr error
+	// Set deleteErr to make PutDeleteDesire return an error.
+	deleteErr error
 }
 
 var _ dynamo.DesireClient = (*fakeDynamo)(nil)
@@ -47,6 +53,9 @@ var _ dynamo.DesireClient = (*fakeDynamo)(nil)
 func (f *fakeDynamo) PutApplyDesire(_ context.Context, _ string, desire *dynamo.ApplyDesire) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.applyErr != nil {
+		return f.applyErr
+	}
 	f.applyCount++
 	f.applies = append(f.applies, desire)
 	return nil
@@ -55,6 +64,9 @@ func (f *fakeDynamo) PutApplyDesire(_ context.Context, _ string, desire *dynamo.
 func (f *fakeDynamo) PutDeleteDesire(_ context.Context, _ string, desire *dynamo.DeleteDesire) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
 	f.deleteCount++
 	f.deletes = append(f.deletes, desire)
 	return nil
@@ -74,7 +86,7 @@ func (f *fakeDynamo) GetApplyDesireStatus(_ context.Context, _, _ string) (*dyna
 	if f.applyStatus != nil {
 		return f.applyStatus, nil
 	}
-	return nil, fmt.Errorf("not found")
+	return nil, fmt.Errorf("%w: fake", dynamo.ErrNotFound)
 }
 
 func (f *fakeDynamo) GetDeleteDesireStatus(_ context.Context, _, _ string) (*dynamo.DeleteDesireStatus, error) {
@@ -83,7 +95,7 @@ func (f *fakeDynamo) GetDeleteDesireStatus(_ context.Context, _, _ string) (*dyn
 	if f.deleteStatus != nil {
 		return f.deleteStatus, nil
 	}
-	return nil, fmt.Errorf("not found")
+	return nil, fmt.Errorf("%w: fake", dynamo.ErrNotFound)
 }
 
 func (f *fakeDynamo) GetReadDesireStatus(_ context.Context, _, _ string) (*dynamo.ReadDesireStatus, error) {
@@ -92,9 +104,12 @@ func (f *fakeDynamo) GetReadDesireStatus(_ context.Context, _, _ string) (*dynam
 	if f.readStatus != nil {
 		return f.readStatus, nil
 	}
-	return nil, fmt.Errorf("not found")
+	return nil, fmt.Errorf("%w: fake", dynamo.ErrNotFound)
 }
 
-func (f *fakeDynamo) DeleteDesireSpec(_ context.Context, _, _, _ string) error {
+func (f *fakeDynamo) DeleteDesireSpec(_ context.Context, _, suffix, docID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deletedSpecs = append(f.deletedSpecs, suffix+"/"+docID)
 	return nil
 }

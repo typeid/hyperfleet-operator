@@ -29,6 +29,7 @@ All CRDs are **namespace-scoped** under API group `hyperfleet.io/v1alpha1`. The 
 - **Cluster** — represents a ROSA HCP cluster. Spec contains all the configuration needed to create a HostedCluster on a management cluster (networking, IAM roles, OIDC issuer, etc.).
 - **NodePool** — represents a set of worker nodes for a Cluster. References a parent Cluster via `spec.clusterRef`. Must be in the same namespace as its parent Cluster.
 - **Placement** — binds a Cluster to a management cluster. Created automatically by the Placement controller. Must be in the same namespace as its Cluster.
+- **HyperFleetManifest** — deploys arbitrary Kubernetes resources to a management cluster. A generic pass-through: raw manifests are written as-is to DynamoDB ApplyDesires. Resources with `watch: true` also get ReadDesires, mirroring their live state from the MC back into the CR status. Used for ZOA (Zero Operator Actions) — deploying Jobs, RBAC, and supporting resources with status feedback — and for any infrastructure resource that doesn't warrant a dedicated controller.
 
 ### Controllers
 
@@ -37,6 +38,7 @@ See individual controller docs for detailed creation/deletion flows:
 - [Placement Controller](placement-controller.md) — auto-creates Placement for new Clusters
 - [Cluster Controller](cluster-controller.md) — generates MC resources, manages lifecycle
 - [NodePool Controller](nodepool-controller.md) — generates NodePool resources on MC
+- [Manifest Controller](manifest-controller.md) — deploys arbitrary resources to MC
 
 ## DynamoDB Desire Pattern
 
@@ -62,7 +64,7 @@ documentID = UUIDv5(NamespaceUUID, "{taskKey}/{group}/{version}/{resource}/{name
 ```
 
 - **NamespaceUUID**: `a3f1b2c4-d5e6-4f7a-8b9c-0d1e2f3a4b5c` (shared with kube-applier-aws)
-- **taskKey**: `hyperfleet-operator` for ApplyDesires, `hyperfleet-operator-read` for ReadDesires, `hyperfleet-operator-delete` for DeleteDesires
+- **taskKey**: `hyperfleet-operator` for Cluster/NodePool ApplyDesires, `hyperfleet-operator-read` for ReadDesires, `hyperfleet-operator-delete` for DeleteDesires, `hyperfleet-manifest/{namespace}/{name}` for HyperFleetManifest (scoped per CR to prevent collisions)
 
 Same inputs always produce the same UUID, giving natural idempotency — re-reconciling a Cluster writes the same document IDs, updating existing rows rather than creating duplicates.
 
@@ -80,7 +82,7 @@ The operator reads the list of available management clusters from a ConfigMap mo
   accountId: "123456789012"
 ```
 
-The Placement controller uses this registry for least-loaded scheduling — it counts existing Placements per MC and assigns new clusters to the MC with the fewest.
+The Placement controller uses this registry to select a management cluster. Currently it picks the first available MC; a placement strategy is planned but not yet implemented.
 
 ## Deployment
 

@@ -11,6 +11,8 @@ spec:
     kind: Placement
     listKind: PlacementList
     plural: placements
+    shortNames:
+    - hfp
     singular: placement
   scope: Namespaced
   versions:
@@ -58,15 +60,20 @@ spec:
               clusterRef:
                 description: ClusterRef is the name of the Cluster CR this placement
                   is for.
+                minLength: 1
                 type: string
               managementCluster:
                 description: ManagementCluster is the target management cluster ID
                   (e.g. mc01).
+                minLength: 1
                 type: string
             required:
             - clusterRef
             - managementCluster
             type: object
+            x-kubernetes-validations:
+            - message: spec.clusterRef is immutable
+              rule: self.clusterRef == oldSelf.clusterRef
           status:
             description: PlacementStatus defines the observed state of a Placement.
             properties:
@@ -140,6 +147,9 @@ spec:
               phase:
                 description: 'Phase summarizes the placement''s state: Pending or
                   Bound.'
+                enum:
+                - Pending
+                - Bound
                 type: string
             type: object
         required:

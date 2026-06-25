@@ -81,7 +81,7 @@ var _ = Describe("Placement Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: clusterName + "-placement"}, &placement)).To(Succeed())
 			Expect(placement.Spec.ClusterRef).To(Equal(clusterName))
 			Expect(placement.Spec.ManagementCluster).To(Equal("mc01"))
-			Expect(placement.Status.Phase).To(Equal("Bound"))
+			Expect(placement.Status.Phase).To(Equal(hyperfleetv1alpha1.PlacementPhaseBound))
 		})
 
 		It("should update Cluster status with placementRef", func() {
