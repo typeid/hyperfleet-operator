@@ -373,6 +373,7 @@ spec:
                 enum:
                 - WaitingForCluster
                 - Provisioning
+                - Ready
                 - Deleting
                 type: string
             type: object

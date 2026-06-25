@@ -30,14 +30,6 @@ The controller watches two resource types:
 - **Cluster CRs** — primary watch, reconciles when a Cluster is created or updated
 - **Placement CRs** — secondary watch via `handler.EnqueueRequestsFromMapFunc`, which maps a Placement back to its parent Cluster via `spec.clusterRef` and triggers reconciliation
 
-## Conditions
-
-| Type | Status | Reason | Description |
-| --- | --- | --- | --- |
-| `Bound` | `True` | `Assigned` | A management cluster has been selected and assigned to the Placement |
-
-The `Bound` condition is set when the Placement's `status.phase` transitions to `Bound`. The Cluster controller waits for this condition before writing ApplyDesires.
-
 ## Notes
 
 - Cluster and Placement are namespace-scoped under the customer's AWS account ID. The Placement is created in the same namespace as the Cluster.

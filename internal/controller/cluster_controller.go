@@ -366,7 +366,8 @@ func (r *ClusterReconciler) updateStatusFromDynamo(ctx context.Context, cluster 
 		if len(hc.Status.Version.History) > 0 {
 			latest.Status.Version = hc.Status.Version.History[0].Version
 		}
-		if meta.IsStatusConditionTrue(latest.Status.Conditions, "Available") {
+		if meta.IsStatusConditionTrue(latest.Status.Conditions, "Available") &&
+			!meta.IsStatusConditionTrue(latest.Status.Conditions, "Degraded") {
 			latest.Status.Phase = hyperfleetv1alpha1.ClusterPhaseReady
 		}
 		latest.Status.ObservedGeneration = latest.Generation

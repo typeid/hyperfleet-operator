@@ -202,7 +202,41 @@ var _ = Describe("NodePool Controller", func() {
 			Expect(err).To(HaveOccurred())
 		})
 
-		It("should set Applied condition when DynamoDB status feedback is available", func() {
+		It("should create ReadDesire alongside ApplyDesire", func() {
+			cluster := newTestCluster(clusterName)
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+			cluster.Status.PlacementRef = &hyperfleetv1alpha1.PlacementReference{
+				Name:              clusterName + "-placement",
+				ManagementCluster: "mc01",
+			}
+			Expect(k8sClient.Status().Update(ctx, cluster)).To(Succeed())
+
+			np := newTestNodePool(nodePoolName, clusterName)
+			Expect(k8sClient.Create(ctx, np)).To(Succeed())
+
+			fd := &fakeDynamo{}
+			reconciler := &NodePoolReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Dynamo: fd,
+			}
+
+			// First reconcile: adds finalizer.
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: nodePoolName},
+			})
+			// Second reconcile: creates desires.
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: nodePoolName},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fd.applyCount).To(Equal(1))
+			Expect(fd.readCount).To(Equal(1))
+			Expect(fd.reads[0].Spec.TargetItem.Resource).To(Equal("nodepools"))
+		})
+
+		It("should set Phase=Ready when ReadDesire reports Ready=True", func() {
 			cluster := newTestCluster(clusterName)
 			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
 
@@ -217,6 +251,9 @@ var _ = Describe("NodePool Controller", func() {
 
 			fd := &fakeDynamo{
 				applyStatus: &dynamo.ApplyDesireStatus{AppliedResourceGeneration: 1},
+				readStatus: &dynamo.ReadDesireStatus{
+					KubeContent: []byte(`{"status":{"conditions":[{"type":"Ready","status":"True","reason":"AsExpected","message":"All nodes ready","lastTransitionTime":"2026-06-25T10:00:00Z"}]}}`),
+				},
 			}
 			reconciler := &NodePoolReconciler{
 				Client: k8sClient,
@@ -228,7 +265,7 @@ var _ = Describe("NodePool Controller", func() {
 			_, _ = reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Namespace: testNS, Name: nodePoolName},
 			})
-			// Second reconcile: creates desire + reads status.
+			// Second reconcile: creates desires + reads status.
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Namespace: testNS, Name: nodePoolName},
 			})
@@ -236,8 +273,49 @@ var _ = Describe("NodePool Controller", func() {
 
 			var updated hyperfleetv1alpha1.NodePool
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: nodePoolName}, &updated)).To(Succeed())
-			Expect(updated.Status.Phase).To(Equal(hyperfleetv1alpha1.NodePoolPhaseProvisioning))
-			Expect(updated.Status.ObservedGeneration).To(Equal(updated.Generation))
+			Expect(updated.Status.Phase).To(Equal(hyperfleetv1alpha1.NodePoolPhaseReady))
+		})
+
+		It("should clean up ReadDesire on deletion", func() {
+			cluster := newTestCluster(clusterName)
+			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
+
+			cluster.Status.PlacementRef = &hyperfleetv1alpha1.PlacementReference{
+				Name:              clusterName + "-placement",
+				ManagementCluster: "mc01",
+			}
+			Expect(k8sClient.Status().Update(ctx, cluster)).To(Succeed())
+
+			np := newTestNodePool(nodePoolName, clusterName)
+			Expect(k8sClient.Create(ctx, np)).To(Succeed())
+
+			fd := &fakeDynamo{
+				deleteStatus: &dynamo.DeleteDesireStatus{},
+			}
+			reconciler := &NodePoolReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Dynamo: fd,
+			}
+
+			// Add finalizer.
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: nodePoolName},
+			})
+
+			// Delete the NodePool.
+			var toDelete hyperfleetv1alpha1.NodePool
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: nodePoolName}, &toDelete)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, &toDelete)).To(Succeed())
+
+			// Reconcile deletion: DeleteDesire confirmed immediately, should also clean up ReadDesire.
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: nodePoolName},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(fd.deletedSpecs).To(HaveLen(1))
+			Expect(fd.deletedSpecs[0]).To(ContainSubstring("-readdesires/"))
 		})
 	})
 })

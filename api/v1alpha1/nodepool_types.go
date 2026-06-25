@@ -23,12 +23,13 @@ import (
 )
 
 // NodePoolPhase represents the lifecycle phase of a NodePool.
-// +kubebuilder:validation:Enum=WaitingForCluster;Provisioning;Deleting
+// +kubebuilder:validation:Enum=WaitingForCluster;Provisioning;Ready;Deleting
 type NodePoolPhase string
 
 const (
 	NodePoolPhaseWaitingForCluster NodePoolPhase = "WaitingForCluster"
 	NodePoolPhaseProvisioning      NodePoolPhase = "Provisioning"
+	NodePoolPhaseReady             NodePoolPhase = "Ready"
 	NodePoolPhaseDeleting          NodePoolPhase = "Deleting"
 )
 

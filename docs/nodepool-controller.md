@@ -67,11 +67,3 @@ sequenceDiagram
 4. **Finalizer removal**: Removes finalizer, allowing the CR to be garbage-collected
 
 The parent Cluster and Placement are unaffected by standalone NodePool deletion.
-
-## Conditions
-
-| Type | Status | Reason | Description |
-| --- | --- | --- | --- |
-| `Applied` | `True` | `DesireApplied` | kube-applier-aws has confirmed the NodePool manifest was applied to the management cluster |
-
-The `Applied` condition is set when the DynamoDB status feedback shows `AppliedResourceGeneration > 0`, indicating kube-applier-aws has successfully applied the NodePool to the MC.
