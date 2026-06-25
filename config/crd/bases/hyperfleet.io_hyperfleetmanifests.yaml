@@ -70,7 +70,9 @@ spec:
                     The controller extracts apiVersion, metadata.name, and metadata.namespace
                     from Content automatically. Only the plural resource name is required
                     separately because kind-to-resource conversion needs a RESTMapper
-                    that the operator doesn't have for MC-side resources.
+                    that the operator doesn't have for MC-side resources. kube-applier-aws
+                    uses the plural to build Kubernetes REST paths; if it derived the plural
+                    via discovery instead, this field could be dropped.
                   properties:
                     content:
                       description: |-
@@ -187,14 +189,9 @@ spec:
                 description: ResourceStatuses contains the mirrored live state of
                   watched resources.
                 items:
-                  description: ResourceStatus holds the mirrored live state of a watched
+                  description: ResourceStatus holds the mirrored status of a watched
                     resource from the MC.
                   properties:
-                    kubeContent:
-                      description: KubeContent is the full live Kubernetes object
-                        mirrored from the MC.
-                      type: object
-                      x-kubernetes-preserve-unknown-fields: true
                     name:
                       description: Name is metadata.name of the watched resource.
                       type: string
@@ -205,6 +202,12 @@ spec:
                     resource:
                       description: Resource is the plural resource name (e.g. "jobs").
                       type: string
+                    status:
+                      description: |-
+                        Status is the .status sub-object of the live resource mirrored from the MC.
+                        Only the status is stored to avoid duplicating the full spec in etcd.
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
                   required:
                   - name
                   - resource
