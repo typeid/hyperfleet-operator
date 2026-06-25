@@ -113,6 +113,21 @@ func Install(ctx context.Context, cfg *rest.Config, namespace string, crds fs.FS
 	return nil
 }
 
+// EnsureNamespace creates the given namespace if it doesn't already exist.
+func EnsureNamespace(ctx context.Context, cfg *rest.Config, namespace string) error {
+	kubeClient, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return fmt.Errorf("create kubernetes client: %w", err)
+	}
+	_, err = kubeClient.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: namespace},
+	}, metav1.CreateOptions{})
+	if err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("create namespace %s: %w", namespace, err)
+	}
+	return nil
+}
+
 func waitForEstablished(
 	ctx context.Context,
 	client apiextensionsv1client.CustomResourceDefinitionInterface,

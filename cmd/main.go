@@ -100,9 +100,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Ensure namespace and CRDs exist on fleet-db before starting informers.
+	// Ensure namespaces and CRDs exist on fleet-db before starting informers.
 	if err := crdinstall.Install(ctx, fleetDBConfig, "hyperfleet-system", crdbases.YAMLs); err != nil {
 		setupLog.Error(err, "Failed to install CRDs on fleet-db")
+		os.Exit(1)
+	}
+	if err := crdinstall.EnsureNamespace(ctx, fleetDBConfig, "zoa-jobs"); err != nil {
+		setupLog.Error(err, "Failed to ensure zoa-jobs namespace on fleet-db")
 		os.Exit(1)
 	}
 
