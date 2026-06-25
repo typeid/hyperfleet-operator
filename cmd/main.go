@@ -43,6 +43,7 @@ import (
 	"github.com/typeid/hyperfleet-operator/internal/dynamo"
 	"github.com/typeid/hyperfleet-operator/internal/eksauth"
 	"github.com/typeid/hyperfleet-operator/internal/mcconfig"
+	"github.com/typeid/hyperfleet-operator/internal/render"
 )
 
 var (
@@ -61,6 +62,7 @@ func main() {
 	var enableLeaderElection bool
 	var awsRegion string
 	var fleetDBClusterName string
+	var baseDomain string
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -68,6 +70,7 @@ func main() {
 		"Enable leader election for controller manager.")
 	flag.StringVar(&awsRegion, "aws-region", "", "AWS region for DynamoDB and EKS (required).")
 	flag.StringVar(&fleetDBClusterName, "fleet-db-cluster-name", "", "EKS cluster name for fleet-db (required).")
+	flag.StringVar(&baseDomain, "base-domain", "", "DNS base domain for hosted clusters (required).")
 
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
@@ -81,6 +84,10 @@ func main() {
 	}
 	if fleetDBClusterName == "" {
 		setupLog.Error(nil, "--fleet-db-cluster-name is required")
+		os.Exit(1)
+	}
+	if baseDomain == "" {
+		setupLog.Error(nil, "--base-domain is required")
 		os.Exit(1)
 	}
 
@@ -135,10 +142,16 @@ func main() {
 	}
 	mcLoader := mcconfig.NewLoader(localClient)
 
+	rcfg := render.RegionalConfig{
+		BaseDomain: baseDomain,
+		AWSRegion:  awsRegion,
+	}
+
 	if err := (&controller.ClusterReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Dynamo: dynamoClient,
+		Client:        mgr.GetClient(),
+		Scheme:        mgr.GetScheme(),
+		Dynamo:        dynamoClient,
+		RegionalConfig: rcfg,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "cluster")
 		os.Exit(1)

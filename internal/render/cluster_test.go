@@ -16,8 +16,6 @@ func testCluster() *hyperfleetv1alpha1.Cluster {
 			Name:             "my-cluster",
 			AccountID:        "123456789012",
 			Region:           "us-east-1",
-			Zone:             "us-east-1a",
-			BaseDomain:       "example.com",
 			VpcID:            "vpc-abc",
 			PrivateSubnetIDs: []string{"subnet-1"},
 			OIDCIssuerURL:    "https://oidc.example.com/abc12345",
@@ -45,8 +43,15 @@ func testCluster() *hyperfleetv1alpha1.Cluster {
 	}
 }
 
+func testRegionalConfig() RegionalConfig {
+	return RegionalConfig{
+		BaseDomain: "example.com",
+		AWSRegion:  "us-east-1",
+	}
+}
+
 func TestClusterResourcesCount(t *testing.T) {
-	resources, err := ClusterResources(testCluster())
+	resources, err := ClusterResources(testCluster(), testRegionalConfig())
 	if err != nil {
 		t.Fatalf("ClusterResources: %v", err)
 	}
@@ -56,7 +61,7 @@ func TestClusterResourcesCount(t *testing.T) {
 }
 
 func TestClusterResourcesTypes(t *testing.T) {
-	resources, err := ClusterResources(testCluster())
+	resources, err := ClusterResources(testCluster(), testRegionalConfig())
 	if err != nil {
 		t.Fatalf("ClusterResources: %v", err)
 	}
@@ -101,7 +106,7 @@ func TestHash4(t *testing.T) {
 }
 
 func TestHostedClusterDNS(t *testing.T) {
-	resources, err := ClusterResources(testCluster())
+	resources, err := ClusterResources(testCluster(), testRegionalConfig())
 	if err != nil {
 		t.Fatalf("ClusterResources: %v", err)
 	}
@@ -131,7 +136,7 @@ func TestHostedClusterDNS(t *testing.T) {
 }
 
 func TestCreatorARNInAuthConfig(t *testing.T) {
-	resources, err := ClusterResources(testCluster())
+	resources, err := ClusterResources(testCluster(), testRegionalConfig())
 	if err != nil {
 		t.Fatalf("ClusterResources: %v", err)
 	}

@@ -6,6 +6,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// RegionalConfig holds per-region values injected by the operator at startup.
+type RegionalConfig struct {
+	BaseDomain string
+	AWSRegion  string
+}
+
 // Resource is a generated Kubernetes resource with its GVR for desire creation.
 type Resource struct {
 	Group     string

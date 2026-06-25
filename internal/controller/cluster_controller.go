@@ -50,8 +50,9 @@ const (
 // that kube-applier-aws applies to the management cluster.
 type ClusterReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
-	Dynamo dynamo.DesireClient
+	Scheme        *runtime.Scheme
+	Dynamo        dynamo.DesireClient
+	RegionalConfig render.RegionalConfig
 }
 
 // +kubebuilder:rbac:groups=hyperfleet.io,resources=clusters,verbs=get;list;watch;create;update;patch;delete
@@ -111,7 +112,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	// Generate the 7 cluster resources and create ApplyDesires.
-	resources, err := render.ClusterResources(&cluster)
+	resources, err := render.ClusterResources(&cluster, r.RegionalConfig)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("render cluster resources: %w", err)
 	}

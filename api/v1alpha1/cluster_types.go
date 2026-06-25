@@ -52,15 +52,6 @@ type ClusterSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	Region string `json:"region"`
 
-	// Zone is the AWS availability zone (e.g. us-east-1a).
-	// Workaround for CCM region detection on EKS (OCPBUGS-84562).
-	// +kubebuilder:validation:MinLength=1
-	Zone string `json:"zone"`
-
-	// BaseDomain is the DNS base domain for the cluster.
-	// +kubebuilder:validation:MinLength=1
-	BaseDomain string `json:"baseDomain"`
-
 	// VpcID is the AWS VPC ID for the cluster's worker nodes.
 	// +kubebuilder:validation:Pattern=`^vpc-[a-z0-9]+$`
 	VpcID string `json:"vpcId"`

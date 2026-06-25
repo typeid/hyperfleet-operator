@@ -16,14 +16,13 @@ import (
 )
 
 // ClusterResources generates the 7 Kubernetes resources for a cluster on the MC.
-func ClusterResources(cluster *hyperfleetv1alpha1.Cluster) ([]Resource, error) {
+func ClusterResources(cluster *hyperfleetv1alpha1.Cluster, rcfg RegionalConfig) ([]Resource, error) {
 	clusterID := cluster.Name
 	clusterName := cluster.Spec.Name
 	ns := clusterNamespace(clusterID)
 	h4 := hash4(clusterID)
-	baseDomain := cluster.Spec.BaseDomain
 
-	hc, err := hostedCluster(cluster, h4)
+	hc, err := hostedCluster(cluster, h4, rcfg)
 	if err != nil {
 		return nil, err
 	}
@@ -33,7 +32,7 @@ func ClusterResources(cluster *hyperfleetv1alpha1.Cluster) ([]Resource, error) {
 		clusterConfig(clusterID, clusterName, ns),
 		awsIAMAuthConfig(clusterID, clusterName, ns, cluster.Spec.CreatorARN),
 		pullSecret(clusterID, ns),
-		apiServingCert(clusterID, clusterName, h4, baseDomain, ns),
+		apiServingCert(clusterID, clusterName, h4, rcfg.BaseDomain, ns),
 		hc,
 		sshKey(clusterID, ns),
 	}, nil
@@ -178,11 +177,12 @@ func apiServingCert(clusterID, clusterName, h4, baseDomain, ns string) Resource 
 	}
 }
 
-func hostedCluster(cluster *hyperfleetv1alpha1.Cluster, h4 string) (Resource, error) {
+func hostedCluster(cluster *hyperfleetv1alpha1.Cluster, h4 string, rcfg RegionalConfig) (Resource, error) {
 	clusterID := cluster.Name
 	clusterName := cluster.Spec.Name
 	ns := clusterNamespace(clusterID)
-	baseDomain := cluster.Spec.BaseDomain
+	baseDomain := rcfg.BaseDomain
+	zone := rcfg.AWSRegion + "a"
 	roles := cluster.Spec.Platform.AWS.Roles
 
 	clusterNetwork := make([]hypershiftv1beta1.ClusterNetworkEntry, 0, len(cluster.Spec.Networking.ClusterNetwork))
@@ -265,7 +265,7 @@ func hostedCluster(cluster *hyperfleetv1alpha1.Cluster, h4 string) (Resource, er
 						Region: cluster.Spec.Region,
 						CloudProviderConfig: &hypershiftv1beta1.AWSCloudProviderConfig{
 							VPC:  cluster.Spec.VpcID,
-							Zone: cluster.Spec.Zone,
+							Zone: zone,
 							Subnet: &hypershiftv1beta1.AWSResourceReference{
 								ID: ptr.To(strings.Join(cluster.Spec.PrivateSubnetIDs, ",")),
 							},

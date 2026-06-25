@@ -30,6 +30,7 @@ import (
 	hypershiftv1beta1 "github.com/openshift/hypershift/api/hypershift/v1beta1"
 	hyperfleetv1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
 	"github.com/typeid/hyperfleet-operator/internal/dynamo"
+	"github.com/typeid/hyperfleet-operator/internal/render"
 )
 
 var _ = Describe("Cluster Controller", func() {
@@ -66,7 +67,8 @@ var _ = Describe("Cluster Controller", func() {
 			reconciler := &ClusterReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
-				Dynamo: &fakeDynamo{},
+				Dynamo:         &fakeDynamo{},
+				RegionalConfig: render.RegionalConfig{BaseDomain: "example.com", AWSRegion: "us-east-1"},
 			}
 
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{
@@ -87,7 +89,8 @@ var _ = Describe("Cluster Controller", func() {
 			reconciler := &ClusterReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
-				Dynamo: &fakeDynamo{},
+				Dynamo:         &fakeDynamo{},
+				RegionalConfig: render.RegionalConfig{BaseDomain: "example.com", AWSRegion: "us-east-1"},
 			}
 
 			// First reconcile adds finalizer.
@@ -129,7 +132,8 @@ var _ = Describe("Cluster Controller", func() {
 			reconciler := &ClusterReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
-				Dynamo: fd,
+				Dynamo:         fd,
+				RegionalConfig: render.RegionalConfig{BaseDomain: "example.com", AWSRegion: "us-east-1"},
 			}
 
 			// First reconcile: adds finalizer.
@@ -168,7 +172,8 @@ var _ = Describe("Cluster Controller", func() {
 			reconciler := &ClusterReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
-				Dynamo: fd,
+				Dynamo:         fd,
+				RegionalConfig: render.RegionalConfig{BaseDomain: "example.com", AWSRegion: "us-east-1"},
 			}
 
 			// First reconcile: adds finalizer.
@@ -223,7 +228,8 @@ var _ = Describe("Cluster Controller", func() {
 			reconciler := &ClusterReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
-				Dynamo: &fakeDynamo{},
+				Dynamo:         &fakeDynamo{},
+				RegionalConfig: render.RegionalConfig{BaseDomain: "example.com", AWSRegion: "us-east-1"},
 			}
 
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
@@ -244,8 +250,6 @@ func newTestCluster(name string) *hyperfleetv1alpha1.Cluster {
 			Name:                      "my-cluster",
 			AccountID:                 "123456789012",
 			Region:                    "us-east-1",
-			Zone:                      "us-east-1a",
-			BaseDomain:                "example.com",
 			VpcID:                     "vpc-abc123",
 			PrivateSubnetIDs:          []string{"subnet-1", "subnet-2"},
 			WorkerInstanceProfileName: "worker-profile",
