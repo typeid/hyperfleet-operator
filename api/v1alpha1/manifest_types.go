@@ -64,7 +64,7 @@ type ResourceTemplate struct {
 	Watch bool `json:"watch,omitempty"`
 }
 
-// ResourceStatus holds the mirrored live state of a watched resource from the MC.
+// ResourceStatus holds the mirrored status of a watched resource from the MC.
 type ResourceStatus struct {
 	// Resource is the plural resource name (e.g. "jobs").
 	Resource string `json:"resource"`
@@ -73,9 +73,10 @@ type ResourceStatus struct {
 	// Namespace is metadata.namespace (empty for cluster-scoped resources).
 	// +optional
 	Namespace string `json:"namespace,omitempty"`
-	// KubeContent is the full live Kubernetes object mirrored from the MC.
+	// Status is the .status sub-object of the live resource mirrored from the MC.
+	// Only the status is stored to avoid duplicating the full spec in etcd.
 	// +optional
-	KubeContent runtime.RawExtension `json:"kubeContent,omitempty"`
+	Status runtime.RawExtension `json:"status,omitempty"`
 }
 
 // HyperFleetManifestStatus defines the observed state of a HyperFleetManifest.

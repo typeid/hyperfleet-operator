@@ -320,11 +320,21 @@ func (r *HyperFleetManifestReconciler) updateResourceStatuses(ctx context.Contex
 		if readStatus.KubeContent == nil {
 			continue
 		}
+		var obj struct {
+			Status json.RawMessage `json:"status"`
+		}
+		if err := json.Unmarshal(readStatus.KubeContent, &obj); err != nil {
+			log.Error(err, "failed to unmarshal KubeContent", "resource", res.Resource, "name", name)
+			continue
+		}
+		if len(obj.Status) == 0 {
+			continue
+		}
 		statuses = append(statuses, hyperfleetv1alpha1.ResourceStatus{
-			Resource:    res.Resource,
-			Name:        name,
-			Namespace:   namespace,
-			KubeContent: runtime.RawExtension{Raw: readStatus.KubeContent},
+			Resource:  res.Resource,
+			Name:      name,
+			Namespace: namespace,
+			Status:    runtime.RawExtension{Raw: obj.Status},
 		})
 	}
 

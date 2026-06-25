@@ -388,7 +388,7 @@ var _ = Describe("HyperFleetManifest Controller", func() {
 			Expect(updated.Status.ResourceStatuses[0].Resource).To(Equal("jobs"))
 			Expect(updated.Status.ResourceStatuses[0].Name).To(Equal("collect-logs-abc123"))
 			Expect(updated.Status.ResourceStatuses[0].Namespace).To(Equal("zoa-actions"))
-			Expect(updated.Status.ResourceStatuses[0].KubeContent.Raw).To(MatchJSON(kubeContent))
+			Expect(updated.Status.ResourceStatuses[0].Status.Raw).To(MatchJSON(`{"succeeded":1,"startTime":"2026-06-25T10:00:00Z","completionTime":"2026-06-25T10:00:05Z"}`))
 		})
 
 		It("should not write ReadDesires for unwatched resources", func() {
