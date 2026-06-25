@@ -46,7 +46,9 @@ type HyperFleetManifestSpec struct {
 // The controller extracts apiVersion, metadata.name, and metadata.namespace
 // from Content automatically. Only the plural resource name is required
 // separately because kind-to-resource conversion needs a RESTMapper
-// that the operator doesn't have for MC-side resources.
+// that the operator doesn't have for MC-side resources. kube-applier-aws
+// uses the plural to build Kubernetes REST paths; if it derived the plural
+// via discovery instead, this field could be dropped.
 type ResourceTemplate struct {
 	// Resource is the plural resource name (e.g. "configmaps", "deployments").
 	// +kubebuilder:validation:MinLength=1
