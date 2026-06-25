@@ -35,6 +35,7 @@ import (
 	"github.com/typeid/hyperfleet-operator/internal/crdinstall"
 	dynamo "github.com/typeid/hyperfleet-operator/internal/dynamo"
 	"github.com/typeid/hyperfleet-operator/internal/mcconfig"
+	"github.com/typeid/hyperfleet-operator/internal/render"
 )
 
 const (
@@ -111,7 +112,7 @@ var _ = BeforeSuite(func() {
 	Expect(cfg).NotTo(BeNil())
 
 	By("installing CRDs via crdinstall (same path as production)")
-	Expect(crdinstall.Install(ctx, cfg, crdbases.YAMLs)).To(Succeed())
+	Expect(crdinstall.Install(ctx, cfg, "hyperfleet-system", crdbases.YAMLs)).To(Succeed())
 
 	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
 	Expect(err).NotTo(HaveOccurred())
@@ -166,6 +167,10 @@ var _ = BeforeSuite(func() {
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 		Dynamo: dynamoCli,
+		RegionalConfig: render.RegionalConfig{
+			BaseDomain: "e2e.example.com",
+			AWSRegion:  "us-east-1",
+		},
 	}).SetupWithManager(mgr)).To(Succeed())
 
 	Expect((&controller.NodePoolReconciler{

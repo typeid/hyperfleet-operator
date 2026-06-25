@@ -46,8 +46,8 @@ var _ = Describe("HyperFleetManifest lifecycle", func() {
 			items := scanTable(specsTable)
 			resources := map[string]bool{}
 			for _, item := range items {
-				resource := attrString(item, "targetItem", "resource")
-				name := attrString(item, "targetItem", "name")
+				resource := attrString(item, "spec", "targetItem", "resource")
+				name := attrString(item, "spec", "targetItem", "name")
 				resources[resource+"/"+name] = true
 			}
 			g.Expect(resources).To(HaveKey("serviceaccounts/e2e-runner"))
@@ -59,7 +59,7 @@ var _ = Describe("HyperFleetManifest lifecycle", func() {
 		By("verifying KubeContent is the raw JSON")
 		items := scanTable(specsTable)
 		for _, item := range items {
-			if attrString(item, "targetItem", "resource") == "jobs" {
+			if attrString(item, "spec", "targetItem", "resource") == "jobs" {
 				content := attrStringDirect(item, "spec_kubeContent")
 				Expect(content).To(ContainSubstring("e2e-job-abc123"))
 				Expect(content).To(ContainSubstring("e2e-runner"))
@@ -113,7 +113,7 @@ var _ = Describe("HyperFleetManifest lifecycle", func() {
 		Eventually(func(g Gomega) {
 			items := scanTable(specsTable)
 			for _, item := range items {
-				if attrString(item, "targetItem", "name") == "e2e-job-abc123" {
+				if attrString(item, "spec", "targetItem", "name") == "e2e-job-abc123" {
 					content := attrStringDirect(item, "spec_kubeContent")
 					g.Expect(content).To(ContainSubstring("e2e-runner:v2"))
 					return
@@ -146,7 +146,7 @@ var _ = Describe("HyperFleetManifest lifecycle", func() {
 			items := scanTable(specsDelete)
 			resources := map[string]bool{}
 			for _, item := range items {
-				resources[attrString(item, "targetItem", "resource")] = true
+				resources[attrString(item, "spec", "targetItem", "resource")] = true
 			}
 			g.Expect(resources).To(HaveKey("serviceaccounts"), "expected SA DeleteDesire")
 			g.Expect(resources).To(HaveKey("roles"), "expected Role DeleteDesire")
@@ -181,7 +181,7 @@ var _ = Describe("HyperFleetManifest lifecycle", func() {
 		items := scanTable(specsTable)
 		saDesireIDs := []string{}
 		for _, item := range items {
-			if attrString(item, "targetItem", "resource") == "serviceaccounts" {
+			if attrString(item, "spec", "targetItem", "resource") == "serviceaccounts" {
 				saDesireIDs = append(saDesireIDs, attrStringDirect(item, "documentID"))
 			}
 		}
@@ -224,8 +224,8 @@ var _ = Describe("HyperFleetManifest lifecycle", func() {
 			g.Expect(len(items)).To(BeNumerically(">=", 1))
 			found := false
 			for _, item := range items {
-				if attrString(item, "targetItem", "resource") == "jobs" &&
-					attrString(item, "targetItem", "name") == "e2e-job-abc123" {
+				if attrString(item, "spec", "targetItem", "resource") == "jobs" &&
+					attrString(item, "spec", "targetItem", "name") == "e2e-job-abc123" {
 					found = true
 				}
 			}

@@ -50,8 +50,8 @@ const (
 // that kube-applier-aws applies to the management cluster.
 type ClusterReconciler struct {
 	client.Client
-	Scheme        *runtime.Scheme
-	Dynamo        dynamo.DesireClient
+	Scheme         *runtime.Scheme
+	Dynamo         dynamo.DesireClient
 	RegionalConfig render.RegionalConfig
 }
 

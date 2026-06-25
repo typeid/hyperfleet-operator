@@ -104,26 +104,25 @@ func (c *Client) DeleteDesireSpec(ctx context.Context, specsPrefix, suffix, docu
 }
 
 func (c *Client) putDesire(ctx context.Context, table, documentID string, spec any) error {
-	item, err := attributevalue.MarshalMap(spec)
+	specAttrs, err := attributevalue.MarshalMap(spec)
 	if err != nil {
 		return fmt.Errorf("marshal spec: %w", err)
 	}
-	item[attributeDocumentID] = &dynamodbtypes.AttributeValueMemberS{Value: documentID}
-	item["version"] = &dynamodbtypes.AttributeValueMemberN{Value: "1"}
 
-	now := time.Now().UTC().Format(time.RFC3339)
-	item["updateTime"] = &dynamodbtypes.AttributeValueMemberS{Value: now}
+	// kube-applier-aws unmarshals into a struct with `Spec` tagged as
+	// dynamodbav:"spec", so the spec fields must be nested under a "spec" key.
+	item := map[string]dynamodbtypes.AttributeValue{
+		attributeDocumentID: &dynamodbtypes.AttributeValueMemberS{Value: documentID},
+		"version":           &dynamodbtypes.AttributeValueMemberN{Value: "1"},
+		"updateTime":        &dynamodbtypes.AttributeValueMemberS{Value: time.Now().UTC().Format(time.RFC3339)},
+		"spec":              &dynamodbtypes.AttributeValueMemberM{Value: specAttrs},
+	}
 
 	// For ApplyDesireSpec, kubeContent is []byte but needs to be stored as a
 	// top-level string attribute for kube-applier-aws compatibility.
 	if specMap, ok := spec.(ApplyDesireSpec); ok && specMap.KubeContent != nil {
 		item["spec_kubeContent"] = &dynamodbtypes.AttributeValueMemberS{Value: string(specMap.KubeContent)}
-		// Remove from nested spec to avoid double-write
-		if nested, ok := item["spec"]; ok {
-			if m, ok := nested.(*dynamodbtypes.AttributeValueMemberM); ok {
-				delete(m.Value, "kubeContent")
-			}
-		}
+		delete(specAttrs, "kubeContent")
 	}
 
 	_, err = c.db.PutItem(ctx, &dynamodb.PutItemInput{
@@ -151,18 +150,23 @@ func (c *Client) getDesireStatus(ctx context.Context, table, documentID string, 
 		return fmt.Errorf("%w: %s/%s", ErrNotFound, table, documentID)
 	}
 
-	// Read kubeContent from the special top-level attribute if present.
-	if av, ok := result.Item["status_kubeContent"]; ok {
-		if sv, ok := av.(*dynamodbtypes.AttributeValueMemberS); ok {
-			if statusM, ok := result.Item["status"]; ok {
-				if m, ok := statusM.(*dynamodbtypes.AttributeValueMemberM); ok {
-					m.Value["kubeContent"] = &dynamodbtypes.AttributeValueMemberB{Value: []byte(sv.Value)}
-				}
-			}
+	// kube-applier-aws writes the status fields nested under a "status" key.
+	// Extract that map for unmarshalling into the status struct.
+	statusAttrs := result.Item
+	if statusM, ok := result.Item["status"]; ok {
+		if m, ok := statusM.(*dynamodbtypes.AttributeValueMemberM); ok {
+			statusAttrs = m.Value
 		}
 	}
 
-	if err := attributevalue.UnmarshalMap(result.Item, out); err != nil {
+	// Inject kubeContent from the top-level string attribute into the status map.
+	if av, ok := result.Item["status_kubeContent"]; ok {
+		if sv, ok := av.(*dynamodbtypes.AttributeValueMemberS); ok {
+			statusAttrs["kubeContent"] = &dynamodbtypes.AttributeValueMemberB{Value: []byte(sv.Value)}
+		}
+	}
+
+	if err := attributevalue.UnmarshalMap(statusAttrs, out); err != nil {
 		return fmt.Errorf("unmarshal %s/%s: %w", table, documentID, err)
 	}
 	return nil

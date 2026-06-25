@@ -31,8 +31,8 @@ var _ = Describe("Cross-component interaction", func() {
 			hasClusterNS := false
 			hasManifestSA := false
 			for _, item := range items {
-				resource := attrString(item, "targetItem", "resource")
-				name := attrString(item, "targetItem", "name")
+				resource := attrString(item, "spec", "targetItem", "resource")
+				name := attrString(item, "spec", "targetItem", "name")
 				if resource == "namespaces" && name == "clusters-e2e-sep-test" {
 					hasClusterNS = true
 				}

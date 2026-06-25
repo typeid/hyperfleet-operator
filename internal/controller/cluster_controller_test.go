@@ -65,8 +65,8 @@ var _ = Describe("Cluster Controller", func() {
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 
 			reconciler := &ClusterReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:         k8sClient,
+				Scheme:         k8sClient.Scheme(),
 				Dynamo:         &fakeDynamo{},
 				RegionalConfig: render.RegionalConfig{BaseDomain: "example.com", AWSRegion: "us-east-1"},
 			}
@@ -87,8 +87,8 @@ var _ = Describe("Cluster Controller", func() {
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 
 			reconciler := &ClusterReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:         k8sClient,
+				Scheme:         k8sClient.Scheme(),
 				Dynamo:         &fakeDynamo{},
 				RegionalConfig: render.RegionalConfig{BaseDomain: "example.com", AWSRegion: "us-east-1"},
 			}
@@ -130,8 +130,8 @@ var _ = Describe("Cluster Controller", func() {
 
 			fd := &fakeDynamo{}
 			reconciler := &ClusterReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:         k8sClient,
+				Scheme:         k8sClient.Scheme(),
 				Dynamo:         fd,
 				RegionalConfig: render.RegionalConfig{BaseDomain: "example.com", AWSRegion: "us-east-1"},
 			}
@@ -170,8 +170,8 @@ var _ = Describe("Cluster Controller", func() {
 
 			fd := &fakeDynamo{}
 			reconciler := &ClusterReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:         k8sClient,
+				Scheme:         k8sClient.Scheme(),
 				Dynamo:         fd,
 				RegionalConfig: render.RegionalConfig{BaseDomain: "example.com", AWSRegion: "us-east-1"},
 			}
@@ -226,8 +226,8 @@ var _ = Describe("Cluster Controller", func() {
 
 		It("should handle not-found gracefully", func() {
 			reconciler := &ClusterReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:         k8sClient,
+				Scheme:         k8sClient.Scheme(),
 				Dynamo:         &fakeDynamo{},
 				RegionalConfig: render.RegionalConfig{BaseDomain: "example.com", AWSRegion: "us-east-1"},
 			}

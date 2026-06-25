@@ -88,8 +88,6 @@ func newE2ECluster(name string) *hyperfleetv1alpha1.Cluster {
 			Name:                      "my-e2e-cluster",
 			AccountID:                 "111222333444",
 			Region:                    "us-east-1",
-			Zone:                      "us-east-1a",
-			BaseDomain:                "e2e.example.com",
 			VpcID:                     "vpc-e2e0001",
 			PrivateSubnetIDs:          []string{"subnet-e2e0001"},
 			WorkerInstanceProfileName: "worker-profile",

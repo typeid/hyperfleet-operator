@@ -69,8 +69,8 @@ var _ = Describe("Cluster lifecycle", func() {
 		items := scanTable(specsTable)
 		resourceNames := map[string]bool{}
 		for _, item := range items {
-			name := attrString(item, "targetItem", "name")
-			resource := attrString(item, "targetItem", "resource")
+			name := attrString(item, "spec", "targetItem", "name")
+			resource := attrString(item, "spec", "targetItem", "resource")
 			resourceNames[resource+"/"+name] = true
 		}
 
@@ -90,7 +90,7 @@ var _ = Describe("Cluster lifecycle", func() {
 		By("verifying HostedCluster content in DynamoDB")
 		var hcContent map[string]any
 		for _, item := range items {
-			resource := attrString(item, "targetItem", "resource")
+			resource := attrString(item, "spec", "targetItem", "resource")
 			if resource == "hostedclusters" {
 				raw := attrStringDirect(item, "spec_kubeContent")
 				Expect(raw).NotTo(BeEmpty(), "kubeContent should not be empty")
@@ -112,7 +112,7 @@ var _ = Describe("Cluster lifecycle", func() {
 		Eventually(func(g Gomega) {
 			readItems := scanTable(readTable)
 			g.Expect(len(readItems)).To(BeNumerically(">=", 1))
-			resource := attrString(readItems[0], "targetItem", "resource")
+			resource := attrString(readItems[0], "spec", "targetItem", "resource")
 			g.Expect(resource).To(Equal("hostedclusters"))
 		}).Should(Succeed())
 
@@ -211,7 +211,7 @@ var _ = Describe("Cluster lifecycle", func() {
 		Eventually(func(g Gomega) {
 			items := scanTable(specsApply)
 			for _, item := range items {
-				if attrString(item, "targetItem", "resource") == "nodepools" {
+				if attrString(item, "spec", "targetItem", "resource") == "nodepools" {
 					return
 				}
 			}
@@ -234,7 +234,7 @@ var _ = Describe("Cluster lifecycle", func() {
 			items := scanTable(specsDelete)
 			resources := map[string]bool{}
 			for _, item := range items {
-				resources[attrString(item, "targetItem", "resource")] = true
+				resources[attrString(item, "spec", "targetItem", "resource")] = true
 			}
 			g.Expect(resources).To(HaveKey("namespaces"), "expected namespace DeleteDesire")
 			g.Expect(resources).To(HaveKey("nodepools"), "expected nodepool DeleteDesire")
@@ -271,9 +271,9 @@ var _ = Describe("Cluster lifecycle", func() {
 		Eventually(func(g Gomega) {
 			items := scanTable(specsTable)
 			for _, item := range items {
-				resource := attrString(item, "targetItem", "resource")
+				resource := attrString(item, "spec", "targetItem", "resource")
 				if resource == "nodepools" {
-					name := attrString(item, "targetItem", "name")
+					name := attrString(item, "spec", "targetItem", "name")
 					g.Expect(name).To(Equal("my-e2e-cluster-e2e-nodepool"))
 					return
 				}
@@ -303,7 +303,7 @@ var _ = Describe("Cluster lifecycle", func() {
 		Eventually(func(g Gomega) {
 			items := scanTable(specsApply)
 			for _, item := range items {
-				if attrString(item, "targetItem", "resource") == "nodepools" {
+				if attrString(item, "spec", "targetItem", "resource") == "nodepools" {
 					return
 				}
 			}
@@ -321,7 +321,7 @@ var _ = Describe("Cluster lifecycle", func() {
 			items := scanTable(specsDelete)
 			found := false
 			for _, item := range items {
-				if attrString(item, "targetItem", "resource") == "nodepools" {
+				if attrString(item, "spec", "targetItem", "resource") == "nodepools" {
 					found = true
 					break
 				}
