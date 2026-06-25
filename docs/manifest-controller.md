@@ -148,16 +148,13 @@ status:
     - resource: jobs
       name: collect-logs-abc123
       namespace: zoa-actions
-      kubeContent:
-        apiVersion: batch/v1
-        kind: Job
-        status:
-          succeeded: 1
-          completionTime: "2026-06-25T10:00:05Z"
+      status:
+        succeeded: 1
+        completionTime: "2026-06-25T10:00:05Z"
 ```
 
 - `phase: Applied` — ApplyDesires written to DynamoDB, not confirmed on MC
-- `resourceStatuses` — mirrored live state for `watch: true` resources. Empty until kube-applier-aws applies and mirrors back
+- `resourceStatuses` — mirrored `.status` sub-object for `watch: true` resources. Only the status is stored, not the full object, to avoid duplicating spec content in etcd. Empty until kube-applier-aws applies and mirrors back
 
 ## Known Limitations
 

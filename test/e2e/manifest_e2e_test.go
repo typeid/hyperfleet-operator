@@ -232,14 +232,14 @@ var _ = Describe("HyperFleetManifest lifecycle", func() {
 			g.Expect(found).To(BeTrue(), "ReadDesire for Job should exist")
 		}).Should(Succeed())
 
-		By("verifying resourceStatuses is populated with mirrored KubeContent")
+		By("verifying resourceStatuses is populated with mirrored status")
 		Eventually(func(g Gomega) {
 			var updated hyperfleetv1alpha1.HyperFleetManifest
 			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &updated)).To(Succeed())
 			g.Expect(updated.Status.ResourceStatuses).To(HaveLen(1))
 			g.Expect(updated.Status.ResourceStatuses[0].Resource).To(Equal("jobs"))
 			g.Expect(updated.Status.ResourceStatuses[0].Name).To(Equal("e2e-job-abc123"))
-			g.Expect(string(updated.Status.ResourceStatuses[0].KubeContent.Raw)).To(ContainSubstring(`"succeeded":1`))
+			g.Expect(string(updated.Status.ResourceStatuses[0].Status.Raw)).To(ContainSubstring(`"succeeded":1`))
 		}).Should(Succeed())
 	})
 })
