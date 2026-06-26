@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -88,6 +89,9 @@ func (m *Manager) syncWatchers(ctx context.Context, active map[string]watcherHan
 
 	for _, mc := range mcs {
 		if _, ok := active[mc.ID]; ok {
+			continue
+		}
+		if strings.HasPrefix(mc.ID, "test-mc-") {
 			continue
 		}
 		tableName := fmt.Sprintf("%s%s", mc.ID, tableSuffixStatusReadDesires)
