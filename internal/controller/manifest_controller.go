@@ -198,7 +198,8 @@ func (r *ManifestReconciler) reconcileDelete(ctx context.Context, hfm *hyperflee
 	mc := hfm.Spec.ManagementCluster
 	specsPrefix := dynamo.SpecsPrefix(mc)
 	statusPrefix := dynamo.StatusPrefix(mc)
-	scopedTaskKey := manifestScopedTaskKey(hfm) + "-delete"
+	applyTaskKey := manifestScopedTaskKey(hfm)
+	scopedTaskKey := applyTaskKey + "-delete"
 
 	type deleteEntry struct {
 		resource, name string
@@ -212,8 +213,14 @@ func (r *ManifestReconciler) reconcileDelete(ctx context.Context, hfm *hyperflee
 			return ctrl.Result{}, fmt.Errorf("extract metadata from resource %s: %w", res.Resource, err)
 		}
 
-		docID := dynamo.NewDocumentID(scopedTaskKey, group, version, res.Resource, namespace, name)
+		// Remove ApplyDesire spec before creating the DeleteDesire to prevent
+		// kube-applier from racing and re-applying the resource being deleted.
+		applyDocID := dynamo.NewDocumentID(applyTaskKey, group, version, res.Resource, namespace, name)
+		if err := r.Dynamo.DeleteDesireSpec(ctx, specsPrefix, "-applydesires", applyDocID); err != nil {
+			log.Error(err, "failed to clean up ApplyDesire spec", "resource", res.Resource, "name", name)
+		}
 
+		docID := dynamo.NewDocumentID(scopedTaskKey, group, version, res.Resource, namespace, name)
 		deleteDesire := &dynamo.DeleteDesire{
 			DynamoDBMetadata: dynamo.DynamoDBMetadata{DocumentID: docID},
 			Spec: dynamo.DeleteDesireSpec{

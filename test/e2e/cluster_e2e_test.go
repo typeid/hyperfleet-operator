@@ -228,7 +228,7 @@ var _ = Describe("Cluster lifecycle", func() {
 			return k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: "e2e-nodepool"}, &hyperfleetv1alpha1.NodePool{})
 		}).ShouldNot(Succeed())
 
-		By("verifying DeleteDesires appear in DynamoDB")
+		By("verifying DeleteDesires appear in DynamoDB (HostedCluster, namespace, nodepool)")
 		specsDelete := mc + "-specs-deletedesires"
 		Eventually(func(g Gomega) {
 			items := scanTable(specsDelete)
@@ -236,8 +236,15 @@ var _ = Describe("Cluster lifecycle", func() {
 			for _, item := range items {
 				resources[attrString(item, "spec", "targetItem", "resource")] = true
 			}
+			g.Expect(resources).To(HaveKey("hostedclusters"), "expected HostedCluster DeleteDesire")
 			g.Expect(resources).To(HaveKey("namespaces"), "expected namespace DeleteDesire")
 			g.Expect(resources).To(HaveKey("nodepools"), "expected nodepool DeleteDesire")
+		}).Should(Succeed())
+
+		By("verifying ApplyDesire specs are cleaned up from DynamoDB")
+		Eventually(func(g Gomega) {
+			items := scanTable(specsApply)
+			g.Expect(items).To(BeEmpty(), "all ApplyDesire specs should be cleaned up on deletion")
 		}).Should(Succeed())
 
 		By("verifying Placement CR is deleted")
@@ -314,6 +321,15 @@ var _ = Describe("Cluster lifecycle", func() {
 		var npToDelete hyperfleetv1alpha1.NodePool
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: "e2e-nodepool"}, &npToDelete)).To(Succeed())
 		Expect(k8sClient.Delete(ctx, &npToDelete)).To(Succeed())
+
+		By("verifying NodePool ApplyDesire is cleaned up from DynamoDB")
+		Eventually(func(g Gomega) {
+			items := scanTable(specsApply)
+			for _, item := range items {
+				g.Expect(attrString(item, "spec", "targetItem", "resource")).NotTo(Equal("nodepools"),
+					"nodepool ApplyDesire should be cleaned up on deletion")
+			}
+		}).Should(Succeed())
 
 		By("verifying NodePool DeleteDesire appears in DynamoDB")
 		specsDelete := mc + "-specs-deletedesires"

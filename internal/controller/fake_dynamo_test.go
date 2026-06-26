@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/typeid/hyperfleet-operator/internal/dynamo"
@@ -112,4 +113,19 @@ func (f *fakeDynamo) DeleteDesireSpec(_ context.Context, _, suffix, docID string
 	defer f.mu.Unlock()
 	f.deletedSpecs = append(f.deletedSpecs, suffix+"/"+docID)
 	return nil
+}
+
+// countSpecCleanups counts ApplyDesire and ReadDesire spec cleanups in deletedSpecs.
+func (f *fakeDynamo) countSpecCleanups() (apply, read int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, spec := range f.deletedSpecs {
+		if strings.Contains(spec, "-applydesires") {
+			apply++
+		}
+		if strings.Contains(spec, "-readdesires") {
+			read++
+		}
+	}
+	return
 }

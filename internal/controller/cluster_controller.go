@@ -252,36 +252,50 @@ func (r *ClusterReconciler) reconcileDelete(ctx context.Context, cluster *hyperf
 	if mc != "" {
 		specsPrefix := dynamo.SpecsPrefix(mc)
 		statusPrefix := dynamo.StatusPrefix(mc)
-
 		ns := fmt.Sprintf("clusters-%s", cluster.Name)
-		docID := dynamo.NewDocumentID(taskKey+"-delete", "", "v1", "namespaces", "", ns)
+		hcName := cluster.Spec.Name
 
-		// Write the DeleteDesire (idempotent — same docID overwrites).
-		deleteDesire := &dynamo.DeleteDesire{
-			DynamoDBMetadata: dynamo.DynamoDBMetadata{DocumentID: docID},
-			Spec: dynamo.DeleteDesireSpec{
-				ManagementCluster: mc,
-				ClusterID:         cluster.Name,
-				TargetItem: dynamo.ResourceReference{
-					Group:    "",
-					Version:  "v1",
-					Resource: "namespaces",
-					Name:     ns,
-				},
-			},
-		}
-		if err := r.Dynamo.PutDeleteDesire(ctx, specsPrefix, deleteDesire); err != nil {
-			return ctrl.Result{}, fmt.Errorf("put delete desire: %w", err)
+		// Remove all ApplyDesire specs to prevent kube-applier from racing
+		// and re-applying resources that are being deleted.
+		resources, err := render.ClusterResources(cluster, r.RegionalConfig)
+		if err != nil {
+			log.Error(err, "failed to render cluster resources for cleanup")
+		} else {
+			for _, m := range resources {
+				applyDocID := dynamo.NewDocumentID(taskKey, m.Group, m.Version, m.Resource, m.Namespace, m.Name)
+				if err := r.Dynamo.DeleteDesireSpec(ctx, specsPrefix, "-applydesires", applyDocID); err != nil {
+					log.Error(err, "failed to clean up ApplyDesire spec", "resource", m.Name)
+				}
+			}
 		}
 
-		// Wait for kube-applier-aws to confirm the deletion.
-		if _, err := r.Dynamo.GetDeleteDesireStatus(ctx, statusPrefix, docID); err != nil {
-			log.Info("Waiting for DeleteDesire confirmation", "namespace", ns)
-			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		// Step 2: Delete HostedCluster first so HyperShift can clean up worker
+		// nodes and load balancers before the namespace is removed.
+		hcRef := dynamo.ResourceReference{
+			Group: "hypershift.openshift.io", Version: "v1beta1",
+			Resource: "hostedclusters", Namespace: ns, Name: hcName,
+		}
+		if result, err := r.writeAndWaitDeleteDesire(ctx, specsPrefix, statusPrefix, mc, cluster.Name, hcRef); err != nil || !result.IsZero() {
+			if err != nil {
+				return ctrl.Result{}, fmt.Errorf("delete hostedcluster: %w", err)
+			}
+			log.Info("Waiting for HostedCluster deletion", "hostedCluster", hcName)
+			return result, nil
+		}
+
+		// Step 3: Delete the cluster namespace to clean up all remaining resources.
+		nsRef := dynamo.ResourceReference{
+			Group: "", Version: "v1", Resource: "namespaces", Name: ns,
+		}
+		if result, err := r.writeAndWaitDeleteDesire(ctx, specsPrefix, statusPrefix, mc, cluster.Name, nsRef); err != nil || !result.IsZero() {
+			if err != nil {
+				return ctrl.Result{}, fmt.Errorf("delete namespace: %w", err)
+			}
+			log.Info("Waiting for namespace deletion", "namespace", ns)
+			return result, nil
 		}
 
 		// Clean up the HostedCluster ReadDesire spec from DynamoDB.
-		hcName := cluster.Spec.Name
 		readDocID := dynamo.NewDocumentID(taskKey+"-read", "hypershift.openshift.io", "v1beta1", "hostedclusters", ns, hcName)
 		if err := r.Dynamo.DeleteDesireSpec(ctx, specsPrefix, "-readdesires", readDocID); err != nil {
 			log.Error(err, "failed to clean up ReadDesire spec", "hostedcluster", hcName)
@@ -314,6 +328,27 @@ func (r *ClusterReconciler) reconcileDelete(ctx context.Context, cluster *hyperf
 		return ctrl.Result{}, fmt.Errorf("remove finalizer: %w", err)
 	}
 
+	return ctrl.Result{}, nil
+}
+
+// writeAndWaitDeleteDesire writes a DeleteDesire and checks for confirmation.
+// Returns a non-zero result (with RequeueAfter) if still waiting.
+func (r *ClusterReconciler) writeAndWaitDeleteDesire(ctx context.Context, specsPrefix, statusPrefix, mc, clusterID string, target dynamo.ResourceReference) (ctrl.Result, error) {
+	docID := dynamo.NewDocumentID(taskKey+"-delete", target.Group, target.Version, target.Resource, target.Namespace, target.Name)
+	desire := &dynamo.DeleteDesire{
+		DynamoDBMetadata: dynamo.DynamoDBMetadata{DocumentID: docID},
+		Spec: dynamo.DeleteDesireSpec{
+			ManagementCluster: mc,
+			ClusterID:         clusterID,
+			TargetItem:        target,
+		},
+	}
+	if err := r.Dynamo.PutDeleteDesire(ctx, specsPrefix, desire); err != nil {
+		return ctrl.Result{}, err
+	}
+	if _, err := r.Dynamo.GetDeleteDesireStatus(ctx, statusPrefix, docID); err != nil {
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
 	return ctrl.Result{}, nil
 }
 

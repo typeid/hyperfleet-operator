@@ -44,10 +44,10 @@ See individual controller docs for detailed creation/deletion flows:
 
 The operator is the **inverse** of kube-applier-aws:
 
-|                          | Specs tables | Status tables |
-| ------------------------ | ------------ | ------------- |
-| **hyperfleet-operator**  | writes       | reads         |
-| **kube-applier-aws**     | reads        | writes        |
+|                         | Specs tables | Status tables |
+| ----------------------- | ------------ | ------------- |
+| **hyperfleet-operator** | writes       | reads         |
+| **kube-applier-aws**    | reads        | writes        |
 
 Per management cluster, there are 6 DynamoDB tables:
 
@@ -67,6 +67,10 @@ documentID = UUIDv5(NamespaceUUID, "{taskKey}/{group}/{version}/{resource}/{name
 - **taskKey**: `hyperfleet-operator` for Cluster/NodePool ApplyDesires, `hyperfleet-operator-read` for ReadDesires, `hyperfleet-operator-delete` for DeleteDesires, `hyperfleet-manifest/{namespace}/{name}` for HyperFleetManifest (scoped per CR to prevent collisions)
 
 Same inputs always produce the same UUID, giving natural idempotency — re-reconciling a Cluster writes the same document IDs, updating existing rows rather than creating duplicates.
+
+### Deletion Invariant
+
+On deletion, controllers always remove ApplyDesire specs before writing DeleteDesires. This prevents a race where kube-applier reads and re-applies an ApplyDesire for a resource that's being deleted. Finalizers guarantee re-entry into the delete path, so atomicity between cleanup and write is not required. See individual controller docs for specific deletion flows.
 
 ### Management Cluster Registry
 

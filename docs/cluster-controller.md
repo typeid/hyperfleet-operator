@@ -50,15 +50,15 @@ sequenceDiagram
 
 The controller generates 7 Kubernetes manifests, all scoped to namespace `clusters-{clusterID}`:
 
-| # | Resource | Name | Purpose |
-| --- | --- | --- | --- |
-| 1 | Namespace | `clusters-{clusterID}` | Isolation boundary for all cluster resources |
-| 2 | ConfigMap | `cluster-config` | Cluster ID and display name |
-| 3 | ConfigMap | `aws-iam-auth-config` | AWS IAM authenticator mapping (creator ARN → system:masters) |
-| 4 | ExternalSecret | `pull-secret` | Pulls container registry credentials from AWS Parameter Store |
-| 5 | Certificate | `api-serving-cert` | TLS cert for `*.{name}.{hash4}.{baseDomain}` via cert-manager |
-| 6 | HostedCluster | `{clusterName}` | HyperShift control plane definition |
-| 7 | Secret | `ssh-key` | SSH key placeholder |
+| #   | Resource       | Name                   | Purpose                                                       |
+| --- | -------------- | ---------------------- | ------------------------------------------------------------- |
+| 1   | Namespace      | `clusters-{clusterID}` | Isolation boundary for all cluster resources                  |
+| 2   | ConfigMap      | `cluster-config`       | Cluster ID and display name                                   |
+| 3   | ConfigMap      | `aws-iam-auth-config`  | AWS IAM authenticator mapping (creator ARN → system:masters)  |
+| 4   | ExternalSecret | `pull-secret`          | Pulls container registry credentials from AWS Parameter Store |
+| 5   | Certificate    | `api-serving-cert`     | TLS cert for `*.{name}.{hash4}.{baseDomain}` via cert-manager |
+| 6   | HostedCluster  | `{clusterName}`        | HyperShift control plane definition                           |
+| 7   | Secret         | `ssh-key`              | SSH key placeholder                                           |
 
 ### DNS and hash4
 
@@ -73,7 +73,7 @@ For example, cluster ID `abc12345` with name `my-cluster` and baseDomain `rosa.e
 
 ## Deletion Flow
 
-Deletion follows a strict ordering to ensure MC resources are cleaned up before the Placement is removed. The controller requeues at each step, making the flow non-blocking.
+Deletion follows a strict ordering: NodePools first, then HostedCluster (so HyperShift can clean up workers and load balancers), then the namespace (cascading remaining resources). ApplyDesire specs are always removed before DeleteDesires are written to prevent kube-applier from racing and re-applying resources being deleted.
 
 ```mermaid
 sequenceDiagram
@@ -89,26 +89,36 @@ sequenceDiagram
     Note over CC: Step 1 — Delete associated NodePools
     CC->>FDB: List NodePools in same namespace where clusterRef=clusterID
     CC->>FDB: Delete each NodePool CR
-    NPC->>DDB: NodePool finalizer writes DeleteDesire (nodepools)
+    NPC->>DDB: NodePool finalizer cleans up ApplyDesire, writes DeleteDesire
     NPC->>FDB: Remove NodePool finalizer → CR deleted
     CC->>CC: Requeue until all NodePools are gone
 
-    Note over CC: Step 2 — Delete cluster resources on MC
+    Note over CC: Step 2 — Clean up ApplyDesires
+    CC->>DDB: Delete all 7 ApplyDesire specs from specs-applydesires
+
+    Note over CC: Step 3 — Delete HostedCluster on MC
+    CC->>DDB: Write DeleteDesire for HostedCluster
+    CC->>DDB: Poll status table for confirmation
+    CC->>CC: Requeue until confirmed
+
+    Note over CC: Step 4 — Delete namespace on MC
     CC->>DDB: Write DeleteDesire for namespace clusters-{clusterID}
-    CC->>DDB: Poll status table for deletion confirmation
+    CC->>DDB: Poll status table for confirmation
     CC->>CC: Requeue until confirmed
     CC->>DDB: Delete ReadDesire spec for HostedCluster
 
-    Note over CC: Step 3 — Delete Placement
+    Note over CC: Step 5 — Delete Placement
     CC->>FDB: Delete Placement CR
 
-    Note over CC: Step 4 — Remove finalizer
+    Note over CC: Step 6 — Remove finalizer
     CC->>FDB: Remove finalizer → Cluster CR deleted
 ```
 
 ### Deletion Steps
 
-1. **NodePool cascade**: Lists all NodePools in the same namespace with matching `clusterRef`, deletes each one. Each NodePool has its own finalizer that writes a DeleteDesire before clearing. The controller requeues until all NodePools are fully gone.
-2. **Namespace DeleteDesire**: Writes a DeleteDesire for the `clusters-{clusterID}` namespace, which cascades deletion of all MC resources. Polls the `{mc}-status-deletedesires` table until kube-applier-aws confirms the deletion. After confirmation, deletes the HostedCluster ReadDesire spec from DynamoDB.
-3. **Placement cleanup**: Deletes the Placement CR (last, after MC resources are confirmed gone).
-4. **Finalizer removal**: Removes the `hyperfleet.io/operator` finalizer, allowing Kubernetes to complete the CR deletion.
+1. **NodePool cascade**: Lists all NodePools in the same namespace with matching `clusterRef`, deletes each one. Each NodePool has its own finalizer that cleans up its ApplyDesire and writes a DeleteDesire before clearing. Requeues until all NodePools are fully gone.
+2. **ApplyDesire cleanup**: Deletes all 7 ApplyDesire specs from DynamoDB. This must happen before writing DeleteDesires to prevent kube-applier from racing and re-applying resources that are being deleted.
+3. **HostedCluster DeleteDesire**: Writes a DeleteDesire for the HostedCluster resource and waits for confirmation. Deleting the HostedCluster first allows HyperShift to clean up worker nodes and load balancers before the namespace is removed.
+4. **Namespace DeleteDesire**: Writes a DeleteDesire for `clusters-{clusterID}`, cascading all remaining MC resources. After confirmation, deletes the HostedCluster ReadDesire spec from DynamoDB.
+5. **Placement cleanup**: Deletes the Placement CR (last, after MC resources are confirmed gone).
+6. **Finalizer removal**: Removes the `hyperfleet.io/operator` finalizer, allowing Kubernetes to complete the CR deletion.

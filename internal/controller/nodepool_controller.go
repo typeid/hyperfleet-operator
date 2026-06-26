@@ -182,6 +182,13 @@ func (r *NodePoolReconciler) reconcileDelete(ctx context.Context, nodePool *hype
 		m := render.NodePoolResource(nodePool, &cluster)
 		ns := m.Namespace
 
+		// Remove ApplyDesire spec before creating the DeleteDesire to prevent
+		// kube-applier from racing and re-applying the resource being deleted.
+		applyDocID := dynamo.NewDocumentID(taskKey, m.Group, m.Version, m.Resource, ns, m.Name)
+		if err := r.Dynamo.DeleteDesireSpec(ctx, specsPrefix, "-applydesires", applyDocID); err != nil {
+			log.Error(err, "failed to clean up ApplyDesire spec", "nodepool", m.Name)
+		}
+
 		docID := dynamo.NewDocumentID(taskKey+"-delete", m.Group, m.Version, m.Resource, ns, m.Name)
 
 		deleteDesire := &dynamo.DeleteDesire{

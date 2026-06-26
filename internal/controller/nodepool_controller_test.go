@@ -314,8 +314,10 @@ var _ = Describe("NodePool Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			Expect(fd.deletedSpecs).To(HaveLen(1))
-			Expect(fd.deletedSpecs[0]).To(ContainSubstring("-readdesires/"))
+			// 1 ApplyDesire cleanup + 1 ReadDesire cleanup = 2 total.
+			Expect(fd.deletedSpecs).To(HaveLen(2))
+			Expect(fd.deletedSpecs[0]).To(ContainSubstring("-applydesires/"))
+			Expect(fd.deletedSpecs[1]).To(ContainSubstring("-readdesires/"))
 		})
 	})
 })

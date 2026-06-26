@@ -140,6 +140,13 @@ var _ = Describe("Manifest lifecycle", func() {
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &toDelete)).To(Succeed())
 		Expect(k8sClient.Delete(ctx, &toDelete)).To(Succeed())
 
+		By("verifying ApplyDesire specs are cleaned up from DynamoDB")
+		specsApply := mc + "-specs-applydesires"
+		Eventually(func(g Gomega) {
+			items := scanTable(specsApply)
+			g.Expect(items).To(BeEmpty(), "all ApplyDesire specs should be cleaned up on deletion")
+		}).Should(Succeed())
+
 		By("verifying DeleteDesires appear in DynamoDB")
 		specsDelete := mc + "-specs-deletedesires"
 		Eventually(func(g Gomega) {

@@ -49,7 +49,10 @@ sequenceDiagram
 
     API->>FDB: Delete HyperFleetManifest CR
     Op->>FDB: Detect DeletionTimestamp
-    Op->>DDB: Write DeleteDesire for each resource
+    loop For each resource
+        Op->>DDB: Delete ApplyDesire spec
+        Op->>DDB: Write DeleteDesire
+    end
     Op->>DDB: Poll status confirmations for all resources
     Op->>Op: Requeue (5s) until all confirmed
     KA->>DDB: Read DeleteDesires, delete from MC, confirm
@@ -59,7 +62,7 @@ sequenceDiagram
 
 ### Deletion Steps
 
-1. **Write DeleteDesires**: Iterates all resources, writes a DeleteDesire for each
+1. **Clean up and delete**: For each resource, removes the ApplyDesire spec then writes a DeleteDesire. ApplyDesires are removed first to prevent kube-applier from racing and re-applying resources being deleted.
 2. **Check confirmations**: Polls `{mc}-status-deletedesires` for every resource. Requeues at 5s until all are confirmed
 3. **ReadDesire cleanup**: Deletes ReadDesire specs from DynamoDB for any resources that had `watch: true`
 4. **Finalizer removal**: Removes finalizer, allowing Kubernetes to complete CR deletion
@@ -128,11 +131,11 @@ spec:
 
 ### ResourceTemplate Fields
 
-| Field | Required | Description |
-| --- | --- | --- |
-| `resource` | Yes | Plural Kubernetes resource name (e.g. `jobs`, `configmaps`) |
-| `content` | Yes | Full Kubernetes manifest. Must include `apiVersion`, `kind`, `metadata.name` |
-| `watch` | No | Creates a ReadDesire, mirroring live state into `status.resourceStatuses` |
+| Field      | Required | Description                                                                  |
+| ---------- | -------- | ---------------------------------------------------------------------------- |
+| `resource` | Yes      | Plural Kubernetes resource name (e.g. `jobs`, `configmaps`)                  |
+| `content`  | Yes      | Full Kubernetes manifest. Must include `apiVersion`, `kind`, `metadata.name` |
+| `watch`    | No       | Creates a ReadDesire, mirroring live state into `status.resourceStatuses`    |
 
 ## Document ID Scoping
 
@@ -158,7 +161,7 @@ status:
 
 ## Known Limitations
 
-- **No resource removal tracking**: Removing a resource from `spec.resources` without deleting the CR leaves the old ApplyDesire in DynamoDB. Delete the entire CR and recreate if the resource list changes.
+- **Orphan cleanup is best-effort**: When resources are removed from `spec.resources`, the controller deletes the old ApplyDesire specs from DynamoDB on the next reconcile (using `status.resourceStatuses` to track previously-applied resources). This does not write DeleteDesires — the resource remains on the MC until the CR is deleted or the resource is removed by other means.
 - **No drift detection**: Writes ApplyDesires on each reconcile but does not verify MC state matches.
 - **No multi-MC fan-out**: Each CR targets one MC. Create one per MC for multi-MC deployments.
 - **No admission-time validation**: Malformed `content` (missing `apiVersion` or `metadata.name`) errors at reconcile time, not admission.

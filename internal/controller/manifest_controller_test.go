@@ -219,11 +219,16 @@ var _ = Describe("Manifest Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &toDelete)).To(Succeed())
 			Expect(k8sClient.Delete(ctx, &toDelete)).To(Succeed())
 
-			// Deletion reconcile: writes DeleteDesires but no confirmation → requeues.
+			// Deletion reconcile: cleans up ApplyDesires, writes DeleteDesires, no confirmation → requeues.
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Namespace: testNS, Name: manifestName},
 			})
 			Expect(err).NotTo(HaveOccurred())
+			// 4 ApplyDesire cleanups before DeleteDesires are written.
+			Expect(fd.deletedSpecs).To(HaveLen(4))
+			for _, spec := range fd.deletedSpecs {
+				Expect(spec).To(ContainSubstring("-applydesires/"))
+			}
 			Expect(fd.deleteCount).To(Equal(4)) // All DeleteDesires written before checking status.
 			Expect(fd.deletes[0].Spec.TargetItem.Resource).To(Equal("serviceaccounts"))
 			Expect(fd.deletes[1].Spec.TargetItem.Resource).To(Equal("roles"))
@@ -264,9 +269,10 @@ var _ = Describe("Manifest Controller", func() {
 			err = k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &hyperfleetv1alpha1.Manifest{})
 			Expect(err).To(HaveOccurred())
 
-			// Verify ReadDesire specs were cleaned up for the watched Job.
-			Expect(fd.deletedSpecs).To(HaveLen(1))
-			Expect(fd.deletedSpecs[0]).To(ContainSubstring("-readdesires"))
+			// Verify ApplyDesire specs were cleaned up (4) and ReadDesire specs for watched Job (1).
+			applyCleanups, readCleanups := fd.countSpecCleanups()
+			Expect(applyCleanups).To(Equal(4), "should clean up all 4 ApplyDesire specs")
+			Expect(readCleanups).To(Equal(1), "should clean up ReadDesire spec for watched Job")
 		})
 
 		It("should error when Content is missing apiVersion", func() {

@@ -151,7 +151,7 @@ var _ = Describe("Cluster Controller", func() {
 			Expect(fd.readCount).To(Equal(1))
 		})
 
-		It("should create DeleteDesire, wait for confirmation, and remove finalizer on deletion", func() {
+		It("should delete HostedCluster first, then namespace, and remove finalizer on deletion", func() {
 			resource := newTestCluster(clusterName)
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 
@@ -181,7 +181,7 @@ var _ = Describe("Cluster Controller", func() {
 				NamespacedName: types.NamespacedName{Namespace: testNS, Name: clusterName},
 			})
 
-			// Set placementRef so the deletion path writes a DeleteDesire.
+			// Set placementRef so the deletion path writes DeleteDesires.
 			var updated hyperfleetv1alpha1.Cluster
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: clusterName}, &updated)).To(Succeed())
 			updated.Status.PlacementRef = &hyperfleetv1alpha1.PlacementReference{
@@ -193,35 +193,43 @@ var _ = Describe("Cluster Controller", func() {
 			// Delete the CR — sets DeletionTimestamp.
 			Expect(k8sClient.Delete(ctx, &updated)).To(Succeed())
 
-			// First deletion reconcile: writes DeleteDesire but no confirmation yet → requeues.
+			// First deletion reconcile: cleans up ApplyDesires, writes HostedCluster
+			// DeleteDesire but no confirmation yet → requeues.
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Namespace: testNS, Name: clusterName},
 			})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(fd.deleteCount).To(Equal(1))
-			Expect(fd.deletes[0].Spec.TargetItem.Resource).To(Equal("namespaces"))
-			Expect(result.RequeueAfter).NotTo(BeZero(), "should requeue while waiting for confirmation")
+			Expect(fd.deletes[0].Spec.TargetItem.Resource).To(Equal("hostedclusters"))
+			Expect(result.RequeueAfter).NotTo(BeZero(), "should requeue while waiting for HostedCluster deletion")
 
-			// Placement should still exist (step 3 not reached yet).
+			// Placement should still exist (not reached yet).
 			var p hyperfleetv1alpha1.Placement
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: clusterName + "-placement"}, &p)).To(Succeed())
 
-			// Simulate kube-applier-aws confirming the deletion.
+			// Simulate kube-applier-aws confirming both deletions.
 			fd.deleteStatus = &dynamo.DeleteDesireStatus{}
 
-			// Second deletion reconcile: confirmation found → deletes Placement, removes finalizer.
+			// Second deletion reconcile: HostedCluster confirmed → writes namespace
+			// DeleteDesire → namespace confirmed → deletes Placement, removes finalizer.
 			_, err = reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Namespace: testNS, Name: clusterName},
 			})
 			Expect(err).NotTo(HaveOccurred())
+			Expect(fd.deleteCount).To(Equal(3)) // HC (rewritten) + NS
+			Expect(fd.deletes[1].Spec.TargetItem.Resource).To(Equal("hostedclusters"))
+			Expect(fd.deletes[2].Spec.TargetItem.Resource).To(Equal("namespaces"))
 
 			// Verify the Placement was deleted.
 			err = k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: clusterName + "-placement"}, &p)
 			Expect(err).To(HaveOccurred())
 
-			// Verify ReadDesire spec was cleaned up from DynamoDB.
-			Expect(fd.deletedSpecs).To(HaveLen(1))
-			Expect(fd.deletedSpecs[0]).To(ContainSubstring("-readdesires"))
+			// Verify ApplyDesire specs were cleaned up before DeleteDesires,
+			// and the ReadDesire spec was cleaned up after confirmation.
+			// 7 ApplyDesire cleanups per reconcile pass (idempotent), 1 ReadDesire cleanup.
+			applyCleanups, readCleanups := fd.countSpecCleanups()
+			Expect(applyCleanups).To(Equal(14), "should clean up 7 ApplyDesire specs on each reconcile pass")
+			Expect(readCleanups).To(Equal(1), "should clean up ReadDesire spec")
 		})
 
 		It("should handle not-found gracefully", func() {
