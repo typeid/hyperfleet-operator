@@ -212,9 +212,24 @@ func (r *ClusterReconciler) reconcileDelete(ctx context.Context, cluster *hyperf
 	log.Info("Cluster deleting", "cluster", cluster.Name)
 	r.setPhase(ctx, cluster, hyperfleetv1alpha1.ClusterPhaseDeleting)
 
-	// Step 1: Delete all associated NodePools. Each NodePool has its own
-	// finalizer that creates a DeleteDesire before clearing, so we wait
-	// for all NodePools to be fully gone before proceeding.
+	// Step 1: Delete NodePools and HostedCluster simultaneously.
+	// The HostedCluster DeleteDesire must be written before or alongside
+	// NodePool deletion so HyperShift sees the cluster is terminating and
+	// skips node drains, which otherwise stall on PDBs.
+
+	// Use PlacementRef from status; fall back to looking up the Placement directly
+	// to avoid skipping DynamoDB cleanup if the PlacementReconciler hasn't run yet.
+	mc := ""
+	if cluster.Status.PlacementRef != nil {
+		mc = cluster.Status.PlacementRef.ManagementCluster
+	} else {
+		placementName := fmt.Sprintf("%s-placement", cluster.Name)
+		var placement hyperfleetv1alpha1.Placement
+		if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: placementName}, &placement); err == nil {
+			mc = placement.Spec.ManagementCluster
+		}
+	}
+
 	var nodePools hyperfleetv1alpha1.NodePoolList
 	if err := r.List(ctx, &nodePools, client.InNamespace(cluster.Namespace)); err != nil {
 		return ctrl.Result{}, fmt.Errorf("list nodepools: %w", err)
@@ -232,24 +247,6 @@ func (r *ClusterReconciler) reconcileDelete(ctx context.Context, cluster *hyperf
 			}
 		}
 		pendingNodePools++
-	}
-	if pendingNodePools > 0 {
-		log.Info("Waiting for NodePools to be deleted", "count", pendingNodePools)
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
-	}
-
-	// Step 2: Create DeleteDesire for the cluster namespace and wait for confirmation.
-	// Use PlacementRef from status; fall back to looking up the Placement directly
-	// to avoid skipping DynamoDB cleanup if the PlacementReconciler hasn't run yet.
-	mc := ""
-	if cluster.Status.PlacementRef != nil {
-		mc = cluster.Status.PlacementRef.ManagementCluster
-	} else {
-		placementName := fmt.Sprintf("%s-placement", cluster.Name)
-		var placement hyperfleetv1alpha1.Placement
-		if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: placementName}, &placement); err == nil {
-			mc = placement.Spec.ManagementCluster
-		}
 	}
 
 	if mc != "" {
@@ -285,18 +282,25 @@ func (r *ClusterReconciler) reconcileDelete(ctx context.Context, cluster *hyperf
 			{DocID: dynamo.NewDocumentID(taskKey+"-delete", nsRef.Group, nsRef.Version, nsRef.Resource, nsRef.Namespace, nsRef.Name), Resource: nsRef.Resource, Name: nsRef.Name},
 		}
 
-		// Step 2: Delete HostedCluster first so HyperShift can clean up worker
-		// nodes and load balancers before the namespace is removed.
-		if result, err := r.writeAndWaitDeleteDesire(ctx, specsPrefix, statusPrefix, mc, cluster.Name, hcRef); err != nil || !result.IsZero() {
-			if err != nil {
-				return ctrl.Result{}, fmt.Errorf("delete hostedcluster: %w", err)
-			}
-			log.Info("Waiting for HostedCluster deletion", "hostedCluster", hcName)
-			r.setSyncedCondition(ctx, cluster, CheckDeleteDesireStatuses(ctx, r.Dynamo, statusPrefix, deleteEntries, cluster.Generation))
-			return result, nil
+		// Write the HostedCluster DeleteDesire and check its status.
+		hcResult, err := r.writeAndWaitDeleteDesire(ctx, specsPrefix, statusPrefix, mc, cluster.Name, hcRef)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("delete hostedcluster: %w", err)
 		}
 
-		// Step 3: Delete the cluster namespace to clean up all remaining resources.
+		// Wait for both HostedCluster deletion and NodePool cleanup to complete.
+		if !hcResult.IsZero() || pendingNodePools > 0 {
+			if pendingNodePools > 0 {
+				log.Info("Waiting for NodePools to be deleted", "count", pendingNodePools)
+			}
+			if !hcResult.IsZero() {
+				log.Info("Waiting for HostedCluster deletion", "hostedCluster", hcName)
+			}
+			r.setSyncedCondition(ctx, cluster, CheckDeleteDesireStatuses(ctx, r.Dynamo, statusPrefix, deleteEntries, cluster.Generation))
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		}
+
+		// Step 2: Delete the cluster namespace to clean up all remaining resources.
 		if result, err := r.writeAndWaitDeleteDesire(ctx, specsPrefix, statusPrefix, mc, cluster.Name, nsRef); err != nil || !result.IsZero() {
 			if err != nil {
 				return ctrl.Result{}, fmt.Errorf("delete namespace: %w", err)
@@ -311,6 +315,9 @@ func (r *ClusterReconciler) reconcileDelete(ctx context.Context, cluster *hyperf
 		if err := r.Dynamo.DeleteDesireSpec(ctx, specsPrefix, "-readdesires", readDocID); err != nil {
 			log.Error(err, "failed to clean up ReadDesire spec", "hostedcluster", hcName)
 		}
+	} else if pendingNodePools > 0 {
+		log.Info("Waiting for NodePools to be deleted", "count", pendingNodePools)
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
 	// Step 3: Delete the Placement explicitly rather than relying on OwnerReference GC.

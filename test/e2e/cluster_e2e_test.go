@@ -184,7 +184,7 @@ var _ = Describe("Cluster lifecycle", func() {
 		Eventually(func(g Gomega) {
 			var c hyperfleetv1alpha1.Cluster
 			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: clusterName}, &c)).To(Succeed())
-			g.Expect(c.Status.ControlPlaneEndpoint).To(Equal("api.e2e-test.example.com"))
+			g.Expect(c.Status.ControlPlaneEndpoint.Host).To(Equal("api.e2e-test.example.com"))
 			g.Expect(c.Status.Version).To(Equal("4.17.3"))
 			g.Expect(c.Status.Phase).To(Equal(hyperfleetv1alpha1.ClusterPhaseReady))
 		}).Should(Succeed())
