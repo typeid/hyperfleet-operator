@@ -52,6 +52,8 @@ func NewRESTConfig(ctx context.Context, awsCfg aws.Config, clusterName string) (
 		TLSClientConfig: rest.TLSClientConfig{
 			CAData: ca,
 		},
+		QPS:   40,
+		Burst: 60,
 		WrapTransport: func(rt http.RoundTripper) http.RoundTripper {
 			return &tokenRoundTripper{delegate: rt, provider: provider}
 		},
