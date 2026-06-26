@@ -15,7 +15,7 @@ sequenceDiagram
     participant KA as kube-applier-aws
     participant MC as Management Cluster
 
-    API->>FDB: Create HyperFleetManifest CR
+    API->>FDB: Create Manifest CR
     Op->>FDB: Watch detects new CR
     Op->>FDB: Add finalizer (hyperfleet.io/manifest), requeue
     Op->>DDB: Write ApplyDesires (one per resource)
@@ -25,7 +25,8 @@ sequenceDiagram
     KA->>MC: Apply resources
     KA->>MC: Watch resources (ReadDesires)
     KA->>DDB: Write ReadDesire status (KubeContent)
-    Op->>DDB: Poll ReadDesire status (every 30s)
+    DDB-->>Op: DynamoDB Stream fires (status change)
+    Op->>DDB: Read ReadDesire status
     Op->>FDB: Update status.resourceStatuses
 ```
 
@@ -34,8 +35,8 @@ sequenceDiagram
 1. **Finalizer**: Adds `hyperfleet.io/manifest` finalizer on first reconcile, requeues
 2. **ApplyDesires**: Writes one ApplyDesire per resource in `spec.resources`
 3. **ReadDesires**: For resources with `watch: true`, writes a ReadDesire. kube-applier-aws mirrors the resource's live state back to DynamoDB as raw `KubeContent`
-4. **Status feedback**: Polls ReadDesire statuses and surfaces raw `KubeContent` in `status.resourceStatuses`. The operator does not parse the content — consumers (e.g. ZOA reconciler) extract fields like `.status.succeeded` from the mirrored Job
-5. **Requeue**: Requeues every 30s if watched resources exist; otherwise done
+4. **Status feedback**: The `status-readdesires` DynamoDB table has DynamoDB Streams enabled. When kube-applier-aws writes status, the stream triggers reconciliation within ~2 seconds. The operator reads the ReadDesire status and surfaces raw `KubeContent` in `status.resourceStatuses`. A fallback requeue at 5-minute intervals covers edge cases (operator restart, missed stream events). The operator does not parse the content — consumers extract the fields they need from the mirrored resource
+5. **Requeue**: Requeues every 5 minutes as a fallback if watched resources exist; DynamoDB Streams provides the primary notification path
 
 ## Deletion Flow
 
@@ -47,7 +48,7 @@ sequenceDiagram
     participant DDB as DynamoDB
     participant KA as kube-applier-aws
 
-    API->>FDB: Delete HyperFleetManifest CR
+    API->>FDB: Delete Manifest CR
     Op->>FDB: Detect DeletionTimestamp
     loop For each resource
         Op->>DDB: Delete ApplyDesire spec
@@ -71,7 +72,7 @@ sequenceDiagram
 
 ```yaml
 apiVersion: hyperfleet.io/v1alpha1
-kind: HyperFleetManifest
+kind: Manifest
 metadata:
   name: zoa-collect-logs-abc123
   namespace: "123456789012"
@@ -139,7 +140,7 @@ spec:
 
 ## Document ID Scoping
 
-Each CR uses a scoped taskKey: `hyperfleet-manifest/{namespace}/{name}`. This prevents collisions between two HyperFleetManifest CRs deploying the same resource and between HyperFleetManifest and Cluster/NodePool controllers (which use `hyperfleet-operator`).
+Each CR uses a scoped taskKey: `hyperfleet-manifest/{namespace}/{name}`. This prevents collisions between two Manifest CRs deploying the same resource and between Manifest and Cluster/NodePool controllers (which use `hyperfleet-operator`).
 
 ## Status
 
@@ -158,6 +159,10 @@ status:
 
 - `phase: Applied` — ApplyDesires written to DynamoDB, not confirmed on MC
 - `resourceStatuses` — mirrored `.status` sub-object for `watch: true` resources. Only the status is stored, not the full object, to avoid duplicating spec content in etcd. Empty until kube-applier-aws applies and mirrors back
+
+## DynamoDB Streams Integration
+
+The operator consumes DynamoDB Streams on the `status-readdesires` tables to react to status changes within ~2 seconds instead of polling. A `statusstream.Manager` runs one stream watcher per management cluster, mapping changed `documentID`s back to the owning Manifest CR via an in-memory reverse index (`DocIndex`). A 5-minute fallback requeue covers operator restarts and missed events.
 
 ## Known Limitations
 

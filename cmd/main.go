@@ -27,11 +27,15 @@ import (
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodbstreams"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -41,6 +45,7 @@ import (
 	"github.com/typeid/hyperfleet-operator/internal/controller"
 	"github.com/typeid/hyperfleet-operator/internal/crdinstall"
 	"github.com/typeid/hyperfleet-operator/internal/dynamo"
+	"github.com/typeid/hyperfleet-operator/internal/dynamo/statusstream"
 	"github.com/typeid/hyperfleet-operator/internal/eksauth"
 	"github.com/typeid/hyperfleet-operator/internal/mcconfig"
 	"github.com/typeid/hyperfleet-operator/internal/render"
@@ -117,7 +122,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	dynamoClient := dynamo.NewClient(dynamodb.NewFromConfig(awsCfg))
+	dynamoDBClient := dynamodb.NewFromConfig(awsCfg)
+	dynamoClient := dynamo.NewClient(dynamoDBClient)
+	streamsClient := dynamodbstreams.NewFromConfig(awsCfg)
 
 	mgr, err := ctrl.NewManager(fleetDBConfig, ctrl.Options{
 		Scheme: scheme,
@@ -173,11 +180,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := (&controller.ManifestReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Dynamo: dynamoClient,
-	}).SetupWithManager(mgr); err != nil {
+	manifestStatusEvents := make(chan event.GenericEvent, 256)
+	manifestReconciler := &controller.ManifestReconciler{
+		Client:       mgr.GetClient(),
+		Scheme:       mgr.GetScheme(),
+		Dynamo:       dynamoClient,
+		StatusEvents: manifestStatusEvents,
+	}
+	if err := manifestReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "manifest")
 		os.Exit(1)
 	}
@@ -194,6 +204,29 @@ func main() {
 	watchCtx, watchCancel := context.WithCancel(context.Background())
 	defer watchCancel()
 	go mcLoader.Watch(watchCtx, 5*time.Second, slog.Default())
+
+	streamMgr := statusstream.NewManager(
+		dynamoDBClient,
+		streamsClient,
+		mcLoader,
+		func(documentID string) {
+			nn, ok := manifestReconciler.DocIndex.Load(documentID)
+			if !ok {
+				return
+			}
+			namespacedName := nn.(types.NamespacedName)
+			manifestStatusEvents <- event.GenericEvent{
+				Object: &metav1.PartialObjectMetadata{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: namespacedName.Namespace,
+						Name:      namespacedName.Name,
+					},
+				},
+			}
+		},
+		slog.Default().With("component", "statusstream"),
+	)
+	go streamMgr.Run(watchCtx, 5*time.Second)
 
 	setupLog.Info("Starting manager")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {

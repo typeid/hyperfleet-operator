@@ -22,17 +22,23 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	hyperfleetv1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
 	"github.com/typeid/hyperfleet-operator/internal/dynamo"
@@ -41,7 +47,7 @@ import (
 const (
 	manifestFinalizer          = "hyperfleet.io/manifest"
 	manifestTaskKey            = "hyperfleet-manifest"
-	manifestStatusRefreshDelay = 30 * time.Second
+	manifestStatusRefreshDelay = 5 * time.Minute
 )
 
 // ManifestReconciler reconciles Manifest objects by creating
@@ -51,8 +57,10 @@ const (
 // infrastructure-level resources (ZOA) to be deployed to MCs without new controller code.
 type ManifestReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
-	Dynamo dynamo.DesireClient
+	Scheme       *runtime.Scheme
+	Dynamo       dynamo.DesireClient
+	StatusEvents chan event.GenericEvent
+	DocIndex     sync.Map
 }
 
 // +kubebuilder:rbac:groups=hyperfleet.io,resources=manifests,verbs=get;list;watch;create;update;patch;delete
@@ -132,6 +140,7 @@ func (r *ManifestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			return ctrl.Result{}, fmt.Errorf("extract metadata for ReadDesire %s: %w", res.Resource, err)
 		}
 		readDocID := dynamo.NewDocumentID(scopedTaskKey+"-read", group, version, res.Resource, namespace, name)
+		r.DocIndex.Store(readDocID, types.NamespacedName{Namespace: hfm.Namespace, Name: hfm.Name})
 		readDesire := &dynamo.ReadDesire{
 			DynamoDBMetadata: dynamo.DynamoDBMetadata{DocumentID: readDocID},
 			Spec: dynamo.ReadDesireSpec{
@@ -256,6 +265,7 @@ func (r *ManifestReconciler) reconcileDelete(ctx context.Context, hfm *hyperflee
 		}
 		group, version, name, namespace, _ := extractResourceMeta(res.Content.Raw)
 		readDocID := dynamo.NewDocumentID(readTaskKey, group, version, res.Resource, namespace, name)
+		r.DocIndex.Delete(readDocID)
 		if err := r.Dynamo.DeleteDesireSpec(ctx, specsPrefix, "-readdesires", readDocID); err != nil {
 			log.Error(err, "failed to clean up ReadDesire spec", "resource", res.Resource, "name", name)
 		}
@@ -362,10 +372,27 @@ func (r *ManifestReconciler) updateResourceStatuses(ctx context.Context, hfm *hy
 }
 
 func (r *ManifestReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(&hyperfleetv1alpha1.Manifest{}).
-		Named("manifest").
-		Complete(r)
+		Named("manifest")
+
+	if r.StatusEvents != nil {
+		b = b.WatchesRawSource(source.Channel(
+			r.StatusEvents,
+			handler.EnqueueRequestsFromMapFunc(
+				func(_ context.Context, obj client.Object) []reconcile.Request {
+					return []reconcile.Request{{
+						NamespacedName: types.NamespacedName{
+							Namespace: obj.GetNamespace(),
+							Name:      obj.GetName(),
+						},
+					}}
+				},
+			),
+		))
+	}
+
+	return b.Complete(r)
 }
 
 // manifestScopedTaskKey returns a taskKey scoped to the CR's identity,

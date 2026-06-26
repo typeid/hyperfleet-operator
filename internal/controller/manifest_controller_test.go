@@ -429,6 +429,77 @@ var _ = Describe("Manifest Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 		})
+
+		It("should populate DocIndex for watched resources", func() {
+			resource := newTestManifest(manifestName)
+			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+
+			fd := &fakeDynamo{}
+			reconciler := &ManifestReconciler{
+				Client: k8sClient, Scheme: k8sClient.Scheme(), Dynamo: fd,
+			}
+
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: manifestName},
+			})
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: manifestName},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// The watched Job should have a DocIndex entry mapping its readDocID
+			// back to the Manifest CR's NamespacedName.
+			readDocID := dynamo.NewDocumentID(
+				"hyperfleet-manifest/"+testNS+"/"+manifestName+"-read",
+				"batch", "v1", "jobs", "zoa-actions", "collect-logs-abc123",
+			)
+			val, ok := reconciler.DocIndex.Load(readDocID)
+			Expect(ok).To(BeTrue(), "DocIndex should contain entry for watched resource")
+			nn := val.(types.NamespacedName)
+			Expect(nn.Namespace).To(Equal(testNS))
+			Expect(nn.Name).To(Equal(manifestName))
+		})
+
+		It("should clean up DocIndex on deletion", func() {
+			resource := newTestManifest(manifestName)
+			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+
+			fd := &fakeDynamo{}
+			reconciler := &ManifestReconciler{
+				Client: k8sClient, Scheme: k8sClient.Scheme(), Dynamo: fd,
+			}
+
+			// Finalizer + desires (populates DocIndex).
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: manifestName},
+			})
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: manifestName},
+			})
+
+			readDocID := dynamo.NewDocumentID(
+				"hyperfleet-manifest/"+testNS+"/"+manifestName+"-read",
+				"batch", "v1", "jobs", "zoa-actions", "collect-logs-abc123",
+			)
+			_, ok := reconciler.DocIndex.Load(readDocID)
+			Expect(ok).To(BeTrue(), "DocIndex should be populated before deletion")
+
+			// Delete the CR.
+			var toDelete hyperfleetv1alpha1.Manifest
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &toDelete)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, &toDelete)).To(Succeed())
+
+			// Simulate all DeleteDesires confirmed so finalizer is removed.
+			fd.deleteStatus = &dynamo.DeleteDesireStatus{}
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: manifestName},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			_, ok = reconciler.DocIndex.Load(readDocID)
+			Expect(ok).To(BeFalse(), "DocIndex should be cleaned up after deletion")
+		})
 	})
 })
 
