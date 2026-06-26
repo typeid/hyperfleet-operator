@@ -179,7 +179,7 @@ var _ = BeforeSuite(func() {
 		Dynamo: dynamoCli,
 	}).SetupWithManager(mgr)).To(Succeed())
 
-	Expect((&controller.HyperFleetManifestReconciler{
+	Expect((&controller.ManifestReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 		Dynamo: dynamoCli,

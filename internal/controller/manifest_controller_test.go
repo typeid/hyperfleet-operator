@@ -32,8 +32,8 @@ import (
 	"github.com/typeid/hyperfleet-operator/internal/dynamo"
 )
 
-var _ = Describe("HyperFleetManifest Controller", func() {
-	Context("When reconciling a HyperFleetManifest (ZOA deploy)", func() {
+var _ = Describe("Manifest Controller", func() {
+	Context("When reconciling a Manifest (ZOA deploy)", func() {
 		const (
 			manifestName = "test-monitoring"
 			testNS       = "123456789012"
@@ -46,7 +46,7 @@ var _ = Describe("HyperFleetManifest Controller", func() {
 		})
 
 		AfterEach(func() {
-			resource := &hyperfleetv1alpha1.HyperFleetManifest{}
+			resource := &hyperfleetv1alpha1.Manifest{}
 			err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, resource)
 			if err == nil {
 				controllerutil.RemoveFinalizer(resource, manifestFinalizer)
@@ -54,7 +54,7 @@ var _ = Describe("HyperFleetManifest Controller", func() {
 				_ = k8sClient.Delete(ctx, resource)
 			}
 			// Clean up the second manifest used in the collision test.
-			other := &hyperfleetv1alpha1.HyperFleetManifest{}
+			other := &hyperfleetv1alpha1.Manifest{}
 			if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: "test-monitoring-b"}, other); err == nil {
 				controllerutil.RemoveFinalizer(other, manifestFinalizer)
 				_ = k8sClient.Update(ctx, other)
@@ -66,7 +66,7 @@ var _ = Describe("HyperFleetManifest Controller", func() {
 			resource := newTestManifest(manifestName)
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 
-			reconciler := &HyperFleetManifestReconciler{
+			reconciler := &ManifestReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 				Dynamo: &fakeDynamo{},
@@ -78,7 +78,7 @@ var _ = Describe("HyperFleetManifest Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.Requeue).To(BeTrue())
 
-			var updated hyperfleetv1alpha1.HyperFleetManifest
+			var updated hyperfleetv1alpha1.Manifest
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &updated)).To(Succeed())
 			Expect(controllerutil.ContainsFinalizer(&updated, manifestFinalizer)).To(BeTrue())
 		})
@@ -88,7 +88,7 @@ var _ = Describe("HyperFleetManifest Controller", func() {
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 
 			fd := &fakeDynamo{}
-			reconciler := &HyperFleetManifestReconciler{
+			reconciler := &ManifestReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 				Dynamo: fd,
@@ -131,7 +131,7 @@ var _ = Describe("HyperFleetManifest Controller", func() {
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 
 			fd := &fakeDynamo{}
-			reconciler := &HyperFleetManifestReconciler{
+			reconciler := &ManifestReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 				Dynamo: fd,
@@ -147,7 +147,7 @@ var _ = Describe("HyperFleetManifest Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			var updated hyperfleetv1alpha1.HyperFleetManifest
+			var updated hyperfleetv1alpha1.Manifest
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &updated)).To(Succeed())
 			Expect(updated.Status.Phase).To(Equal(hyperfleetv1alpha1.ManifestPhaseApplied))
 			Expect(updated.Status.AppliedResources).To(Equal(int32(4)))
@@ -155,7 +155,7 @@ var _ = Describe("HyperFleetManifest Controller", func() {
 		})
 
 		It("should scope document IDs to the CR identity", func() {
-			// Two different HyperFleetManifest CRs deploying the same resource
+			// Two different Manifest CRs deploying the same resource
 			// must produce different document IDs to avoid DynamoDB overwrites.
 			hfmA := newTestManifest(manifestName)
 			hfmB := newTestManifest("test-monitoring-b")
@@ -165,10 +165,10 @@ var _ = Describe("HyperFleetManifest Controller", func() {
 			fdA := &fakeDynamo{}
 			fdB := &fakeDynamo{}
 
-			reconcilerA := &HyperFleetManifestReconciler{
+			reconcilerA := &ManifestReconciler{
 				Client: k8sClient, Scheme: k8sClient.Scheme(), Dynamo: fdA,
 			}
-			reconcilerB := &HyperFleetManifestReconciler{
+			reconcilerB := &ManifestReconciler{
 				Client: k8sClient, Scheme: k8sClient.Scheme(), Dynamo: fdB,
 			}
 
@@ -205,7 +205,7 @@ var _ = Describe("HyperFleetManifest Controller", func() {
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 
 			fd := &fakeDynamo{}
-			reconciler := &HyperFleetManifestReconciler{
+			reconciler := &ManifestReconciler{
 				Client: k8sClient, Scheme: k8sClient.Scheme(), Dynamo: fd,
 			}
 
@@ -215,7 +215,7 @@ var _ = Describe("HyperFleetManifest Controller", func() {
 			})
 
 			// Delete the CR.
-			var toDelete hyperfleetv1alpha1.HyperFleetManifest
+			var toDelete hyperfleetv1alpha1.Manifest
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &toDelete)).To(Succeed())
 			Expect(k8sClient.Delete(ctx, &toDelete)).To(Succeed())
 
@@ -237,7 +237,7 @@ var _ = Describe("HyperFleetManifest Controller", func() {
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 
 			fd := &fakeDynamo{}
-			reconciler := &HyperFleetManifestReconciler{
+			reconciler := &ManifestReconciler{
 				Client: k8sClient, Scheme: k8sClient.Scheme(), Dynamo: fd,
 			}
 
@@ -247,7 +247,7 @@ var _ = Describe("HyperFleetManifest Controller", func() {
 			})
 
 			// Delete the CR.
-			var toDelete hyperfleetv1alpha1.HyperFleetManifest
+			var toDelete hyperfleetv1alpha1.Manifest
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &toDelete)).To(Succeed())
 			Expect(k8sClient.Delete(ctx, &toDelete)).To(Succeed())
 
@@ -261,7 +261,7 @@ var _ = Describe("HyperFleetManifest Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Verify CR is gone (finalizer removed).
-			err = k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &hyperfleetv1alpha1.HyperFleetManifest{})
+			err = k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &hyperfleetv1alpha1.Manifest{})
 			Expect(err).To(HaveOccurred())
 
 			// Verify ReadDesire specs were cleaned up for the watched Job.
@@ -270,9 +270,9 @@ var _ = Describe("HyperFleetManifest Controller", func() {
 		})
 
 		It("should error when Content is missing apiVersion", func() {
-			resource := &hyperfleetv1alpha1.HyperFleetManifest{
+			resource := &hyperfleetv1alpha1.Manifest{
 				ObjectMeta: metav1.ObjectMeta{Name: manifestName, Namespace: testNS},
-				Spec: hyperfleetv1alpha1.HyperFleetManifestSpec{
+				Spec: hyperfleetv1alpha1.ManifestSpec{
 					ManagementCluster: "mc01",
 					Resources: []hyperfleetv1alpha1.ResourceTemplate{{
 						Resource: "configmaps",
@@ -283,7 +283,7 @@ var _ = Describe("HyperFleetManifest Controller", func() {
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 
 			fd := &fakeDynamo{}
-			reconciler := &HyperFleetManifestReconciler{
+			reconciler := &ManifestReconciler{
 				Client: k8sClient, Scheme: k8sClient.Scheme(), Dynamo: fd,
 			}
 
@@ -301,9 +301,9 @@ var _ = Describe("HyperFleetManifest Controller", func() {
 		})
 
 		It("should error when Content is missing metadata.name", func() {
-			resource := &hyperfleetv1alpha1.HyperFleetManifest{
+			resource := &hyperfleetv1alpha1.Manifest{
 				ObjectMeta: metav1.ObjectMeta{Name: manifestName, Namespace: testNS},
-				Spec: hyperfleetv1alpha1.HyperFleetManifestSpec{
+				Spec: hyperfleetv1alpha1.ManifestSpec{
 					ManagementCluster: "mc01",
 					Resources: []hyperfleetv1alpha1.ResourceTemplate{{
 						Resource: "configmaps",
@@ -314,7 +314,7 @@ var _ = Describe("HyperFleetManifest Controller", func() {
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 
 			fd := &fakeDynamo{}
-			reconciler := &HyperFleetManifestReconciler{
+			reconciler := &ManifestReconciler{
 				Client: k8sClient, Scheme: k8sClient.Scheme(), Dynamo: fd,
 			}
 
@@ -334,7 +334,7 @@ var _ = Describe("HyperFleetManifest Controller", func() {
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 
 			fd := &fakeDynamo{}
-			reconciler := &HyperFleetManifestReconciler{
+			reconciler := &ManifestReconciler{
 				Client: k8sClient, Scheme: k8sClient.Scheme(), Dynamo: fd,
 			}
 
@@ -369,7 +369,7 @@ var _ = Describe("HyperFleetManifest Controller", func() {
 					KubeContent: kubeContent,
 				},
 			}
-			reconciler := &HyperFleetManifestReconciler{
+			reconciler := &ManifestReconciler{
 				Client: k8sClient, Scheme: k8sClient.Scheme(), Dynamo: fd,
 			}
 
@@ -382,7 +382,7 @@ var _ = Describe("HyperFleetManifest Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			var updated hyperfleetv1alpha1.HyperFleetManifest
+			var updated hyperfleetv1alpha1.Manifest
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &updated)).To(Succeed())
 			Expect(updated.Status.ResourceStatuses).To(HaveLen(1))
 			Expect(updated.Status.ResourceStatuses[0].Resource).To(Equal("jobs"))
@@ -396,7 +396,7 @@ var _ = Describe("HyperFleetManifest Controller", func() {
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 
 			fd := &fakeDynamo{}
-			reconciler := &HyperFleetManifestReconciler{
+			reconciler := &ManifestReconciler{
 				Client: k8sClient, Scheme: k8sClient.Scheme(), Dynamo: fd,
 			}
 
@@ -412,7 +412,7 @@ var _ = Describe("HyperFleetManifest Controller", func() {
 		})
 
 		It("should handle not-found gracefully", func() {
-			reconciler := &HyperFleetManifestReconciler{
+			reconciler := &ManifestReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 				Dynamo: &fakeDynamo{},
@@ -429,13 +429,13 @@ var _ = Describe("HyperFleetManifest Controller", func() {
 // newTestManifest models a ZOA trusted action: deploy a ServiceAccount, Role,
 // RoleBinding, and a runner Job to an MC. The Job is watched so the platform-api
 // can detect completion via status.resourceStatuses.
-func newTestManifest(name string) *hyperfleetv1alpha1.HyperFleetManifest {
-	return &hyperfleetv1alpha1.HyperFleetManifest{
+func newTestManifest(name string) *hyperfleetv1alpha1.Manifest {
+	return &hyperfleetv1alpha1.Manifest{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: "123456789012",
 		},
-		Spec: hyperfleetv1alpha1.HyperFleetManifestSpec{
+		Spec: hyperfleetv1alpha1.ManifestSpec{
 			ManagementCluster: "mc01",
 			Resources: []hyperfleetv1alpha1.ResourceTemplate{
 				{
@@ -461,13 +461,13 @@ func newTestManifest(name string) *hyperfleetv1alpha1.HyperFleetManifest {
 }
 
 // newTestManifestUnwatched models a pure infrastructure deploy (no status feedback).
-func newTestManifestUnwatched(name string) *hyperfleetv1alpha1.HyperFleetManifest {
-	return &hyperfleetv1alpha1.HyperFleetManifest{
+func newTestManifestUnwatched(name string) *hyperfleetv1alpha1.Manifest {
+	return &hyperfleetv1alpha1.Manifest{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: "123456789012",
 		},
-		Spec: hyperfleetv1alpha1.HyperFleetManifestSpec{
+		Spec: hyperfleetv1alpha1.ManifestSpec{
 			ManagementCluster: "mc01",
 			Resources: []hyperfleetv1alpha1.ResourceTemplate{
 				{

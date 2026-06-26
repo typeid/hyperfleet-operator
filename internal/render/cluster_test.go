@@ -122,12 +122,12 @@ func TestHostedClusterDNS(t *testing.T) {
 		t.Fatal("no hostedcluster resource found")
 	}
 
-	if got := hc.Spec.DNS.BaseDomain; got != "abc1.example.com" {
-		t.Errorf("dns.baseDomain = %q, want %q", got, "abc1.example.com")
+	if got := hc.Spec.DNS.BaseDomain; got != "abc1.0.example.com" {
+		t.Errorf("dns.baseDomain = %q, want %q", got, "abc1.0.example.com")
 	}
 
-	if got := hc.Spec.KubeAPIServerDNSName; got != "api.my-cluster.abc1.example.com" {
-		t.Errorf("kubeAPIServerDNSName = %q, want %q", got, "api.my-cluster.abc1.example.com")
+	if got := hc.Spec.KubeAPIServerDNSName; got != "api.my-cluster.abc1.0.example.com" {
+		t.Errorf("kubeAPIServerDNSName = %q, want %q", got, "api.my-cluster.abc1.0.example.com")
 	}
 
 	if got := hc.Spec.IssuerURL; got != "https://oidc.example.com/abc12345" {

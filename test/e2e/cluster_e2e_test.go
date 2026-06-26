@@ -105,7 +105,7 @@ var _ = Describe("Cluster lifecycle", func() {
 		Expect(spec["infraID"]).To(Equal(clusterName))
 
 		dns := spec["dns"].(map[string]any)
-		Expect(dns["baseDomain"]).To(Equal("e2e-.e2e.example.com"))
+		Expect(dns["baseDomain"]).To(Equal("e2e-.0.e2e.example.com"))
 
 		By("verifying ReadDesire for HostedCluster status feedback")
 		readTable := mc + "-specs-readdesires"

@@ -44,25 +44,25 @@ const (
 	manifestStatusRefreshDelay = 30 * time.Second
 )
 
-// HyperFleetManifestReconciler reconciles HyperFleetManifest objects by creating
+// ManifestReconciler reconciles Manifest objects by creating
 // DynamoDB desires that kube-applier-aws applies to the target management cluster.
 // Unlike ClusterReconciler and NodePoolReconciler which generate typed manifests,
 // this controller accepts arbitrary Kubernetes resources as raw JSON, enabling
 // infrastructure-level resources (ZOA) to be deployed to MCs without new controller code.
-type HyperFleetManifestReconciler struct {
+type ManifestReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 	Dynamo dynamo.DesireClient
 }
 
-// +kubebuilder:rbac:groups=hyperfleet.io,resources=hyperfleetmanifests,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=hyperfleet.io,resources=hyperfleetmanifests/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=hyperfleet.io,resources=hyperfleetmanifests/finalizers,verbs=update
+// +kubebuilder:rbac:groups=hyperfleet.io,resources=manifests,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=hyperfleet.io,resources=manifests/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=hyperfleet.io,resources=manifests/finalizers,verbs=update
 
-func (r *HyperFleetManifestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *ManifestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	var hfm hyperfleetv1alpha1.HyperFleetManifest
+	var hfm hyperfleetv1alpha1.Manifest
 	if err := r.Get(ctx, req.NamespacedName, &hfm); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -158,7 +158,7 @@ func (r *HyperFleetManifestReconciler) Reconcile(ctx context.Context, req ctrl.R
 	}
 
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		var latest hyperfleetv1alpha1.HyperFleetManifest
+		var latest hyperfleetv1alpha1.Manifest
 		if err := r.Get(ctx, client.ObjectKeyFromObject(&hfm), &latest); err != nil {
 			if apierrors.IsNotFound(err) {
 				return nil
@@ -186,14 +186,14 @@ func (r *HyperFleetManifestReconciler) Reconcile(ctx context.Context, req ctrl.R
 	return ctrl.Result{}, nil
 }
 
-func (r *HyperFleetManifestReconciler) reconcileDelete(ctx context.Context, hfm *hyperfleetv1alpha1.HyperFleetManifest) (ctrl.Result, error) {
+func (r *ManifestReconciler) reconcileDelete(ctx context.Context, hfm *hyperfleetv1alpha1.Manifest) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	if !controllerutil.ContainsFinalizer(hfm, manifestFinalizer) {
 		return ctrl.Result{}, nil
 	}
 
-	log.Info("HyperFleetManifest deleting", "manifest", hfm.Name)
+	log.Info("Manifest deleting", "manifest", hfm.Name)
 
 	mc := hfm.Spec.ManagementCluster
 	specsPrefix := dynamo.SpecsPrefix(mc)
@@ -256,7 +256,7 @@ func (r *HyperFleetManifestReconciler) reconcileDelete(ctx context.Context, hfm 
 
 	// Remove finalizer with RetryOnConflict to handle stale resourceVersion.
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		var latest hyperfleetv1alpha1.HyperFleetManifest
+		var latest hyperfleetv1alpha1.Manifest
 		if err := r.Get(ctx, client.ObjectKeyFromObject(hfm), &latest); err != nil {
 			return err
 		}
@@ -276,7 +276,7 @@ func (r *HyperFleetManifestReconciler) reconcileDelete(ctx context.Context, hfm 
 // longer in the current spec. This handles the case where resources are removed from
 // spec.resources between generations — without cleanup, the old desires would persist
 // indefinitely and the removed resources would remain on the management cluster.
-func (r *HyperFleetManifestReconciler) cleanupOrphanedDesires(ctx context.Context, hfm *hyperfleetv1alpha1.HyperFleetManifest, specsPrefix, scopedTaskKey string, currentDocIDs map[string]struct{}) {
+func (r *ManifestReconciler) cleanupOrphanedDesires(ctx context.Context, hfm *hyperfleetv1alpha1.Manifest, specsPrefix, scopedTaskKey string, currentDocIDs map[string]struct{}) {
 	log := logf.FromContext(ctx)
 
 	// Only check for orphans when the spec has actually changed.
@@ -302,7 +302,7 @@ func (r *HyperFleetManifestReconciler) cleanupOrphanedDesires(ctx context.Contex
 	}
 }
 
-func (r *HyperFleetManifestReconciler) updateResourceStatuses(ctx context.Context, hfm *hyperfleetv1alpha1.HyperFleetManifest, statusPrefix, scopedTaskKey string) {
+func (r *ManifestReconciler) updateResourceStatuses(ctx context.Context, hfm *hyperfleetv1alpha1.Manifest, statusPrefix, scopedTaskKey string) {
 	log := logf.FromContext(ctx)
 	var statuses []hyperfleetv1alpha1.ResourceStatus
 
@@ -343,7 +343,7 @@ func (r *HyperFleetManifestReconciler) updateResourceStatuses(ctx context.Contex
 	}
 
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		var latest hyperfleetv1alpha1.HyperFleetManifest
+		var latest hyperfleetv1alpha1.Manifest
 		if err := r.Get(ctx, client.ObjectKeyFromObject(hfm), &latest); err != nil {
 			return err
 		}
@@ -354,17 +354,17 @@ func (r *HyperFleetManifestReconciler) updateResourceStatuses(ctx context.Contex
 	}
 }
 
-func (r *HyperFleetManifestReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *ManifestReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&hyperfleetv1alpha1.HyperFleetManifest{}).
+		For(&hyperfleetv1alpha1.Manifest{}).
 		Named("manifest").
 		Complete(r)
 }
 
 // manifestScopedTaskKey returns a taskKey scoped to the CR's identity,
-// preventing two HyperFleetManifest CRs deploying the same resource
+// preventing two Manifest CRs deploying the same resource
 // from producing colliding DynamoDB document IDs.
-func manifestScopedTaskKey(hfm *hyperfleetv1alpha1.HyperFleetManifest) string {
+func manifestScopedTaskKey(hfm *hyperfleetv1alpha1.Manifest) string {
 	return fmt.Sprintf("%s/%s/%s", manifestTaskKey, hfm.Namespace, hfm.Name)
 }
 

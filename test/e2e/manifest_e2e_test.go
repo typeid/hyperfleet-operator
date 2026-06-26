@@ -13,7 +13,7 @@ import (
 	dynamo "github.com/typeid/hyperfleet-operator/internal/dynamo"
 )
 
-var _ = Describe("HyperFleetManifest lifecycle", func() {
+var _ = Describe("Manifest lifecycle", func() {
 	const (
 		manifestName = "e2e-monitoring"
 		testNS       = "111222333444"
@@ -21,7 +21,7 @@ var _ = Describe("HyperFleetManifest lifecycle", func() {
 
 	AfterEach(func() {
 		for _, name := range []string{manifestName, "e2e-monitoring-b"} {
-			hfm := &hyperfleetv1alpha1.HyperFleetManifest{}
+			hfm := &hyperfleetv1alpha1.Manifest{}
 			if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: name}, hfm); err == nil {
 				controllerutil.RemoveFinalizer(hfm, "hyperfleet.io/manifest")
 				_ = k8sClient.Update(ctx, hfm)
@@ -30,13 +30,13 @@ var _ = Describe("HyperFleetManifest lifecycle", func() {
 		}
 		for _, name := range []string{manifestName, "e2e-monitoring-b"} {
 			Eventually(func() bool {
-				return k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: name}, &hyperfleetv1alpha1.HyperFleetManifest{}) != nil
+				return k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: name}, &hyperfleetv1alpha1.Manifest{}) != nil
 			}).Should(BeTrue())
 		}
 	})
 
-	It("should write ApplyDesires to DynamoDB when a HyperFleetManifest is created", func() {
-		By("creating a HyperFleetManifest CR")
+	It("should write ApplyDesires to DynamoDB when a Manifest is created", func() {
+		By("creating a Manifest CR")
 		hfm := newE2EManifest(manifestName)
 		Expect(k8sClient.Create(ctx, hfm)).To(Succeed())
 
@@ -82,7 +82,7 @@ var _ = Describe("HyperFleetManifest lifecycle", func() {
 
 		By("verifying status is updated")
 		Eventually(func(g Gomega) {
-			var updated hyperfleetv1alpha1.HyperFleetManifest
+			var updated hyperfleetv1alpha1.Manifest
 			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &updated)).To(Succeed())
 			g.Expect(updated.Status.Phase).To(Equal(hyperfleetv1alpha1.ManifestPhaseApplied))
 			g.Expect(updated.Status.AppliedResources).To(Equal(int32(4)))
@@ -90,7 +90,7 @@ var _ = Describe("HyperFleetManifest lifecycle", func() {
 	})
 
 	It("should update ApplyDesires when content changes", func() {
-		By("creating a HyperFleetManifest CR")
+		By("creating a Manifest CR")
 		hfm := newE2EManifest(manifestName)
 		Expect(k8sClient.Create(ctx, hfm)).To(Succeed())
 
@@ -102,7 +102,7 @@ var _ = Describe("HyperFleetManifest lifecycle", func() {
 		}).Should(Succeed())
 
 		By("updating Job image")
-		var toUpdate hyperfleetv1alpha1.HyperFleetManifest
+		var toUpdate hyperfleetv1alpha1.Manifest
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &toUpdate)).To(Succeed())
 		toUpdate.Spec.Resources[3].Content = runtime.RawExtension{
 			Raw: []byte(`{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"e2e-job-abc123","namespace":"e2e-actions"},"spec":{"template":{"spec":{"serviceAccountName":"e2e-runner","containers":[{"name":"runner","image":"registry.example.com/e2e-runner:v2"}],"restartPolicy":"Never"}}}}`),
@@ -123,20 +123,20 @@ var _ = Describe("HyperFleetManifest lifecycle", func() {
 		}).Should(Succeed())
 	})
 
-	It("should write DeleteDesires and clean up when HyperFleetManifest is deleted", func() {
-		By("creating a HyperFleetManifest CR")
+	It("should write DeleteDesires and clean up when Manifest is deleted", func() {
+		By("creating a Manifest CR")
 		hfm := newE2EManifest(manifestName)
 		Expect(k8sClient.Create(ctx, hfm)).To(Succeed())
 
 		By("waiting for Applied status")
 		Eventually(func(g Gomega) {
-			var h hyperfleetv1alpha1.HyperFleetManifest
+			var h hyperfleetv1alpha1.Manifest
 			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &h)).To(Succeed())
 			g.Expect(h.Status.Phase).To(Equal(hyperfleetv1alpha1.ManifestPhaseApplied))
 		}).Should(Succeed())
 
-		By("deleting the HyperFleetManifest CR")
-		var toDelete hyperfleetv1alpha1.HyperFleetManifest
+		By("deleting the Manifest CR")
+		var toDelete hyperfleetv1alpha1.Manifest
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &toDelete)).To(Succeed())
 		Expect(k8sClient.Delete(ctx, &toDelete)).To(Succeed())
 
@@ -154,14 +154,14 @@ var _ = Describe("HyperFleetManifest lifecycle", func() {
 			g.Expect(resources).To(HaveKey("jobs"), "expected Job DeleteDesire")
 		}).Should(Succeed())
 
-		By("verifying HyperFleetManifest CR is fully gone")
+		By("verifying Manifest CR is fully gone")
 		Eventually(func() error {
-			return k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &hyperfleetv1alpha1.HyperFleetManifest{})
+			return k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &hyperfleetv1alpha1.Manifest{})
 		}).ShouldNot(Succeed())
 	})
 
-	It("should not collide when two HyperFleetManifests deploy the same resource", func() {
-		By("creating two HyperFleetManifest CRs deploying the same namespace")
+	It("should not collide when two Manifests deploy the same resource", func() {
+		By("creating two Manifest CRs deploying the same namespace")
 		hfmA := newE2EManifest(manifestName)
 		hfmB := newE2EManifest("e2e-monitoring-b")
 		Expect(k8sClient.Create(ctx, hfmA)).To(Succeed())
@@ -170,7 +170,7 @@ var _ = Describe("HyperFleetManifest lifecycle", func() {
 		By("waiting for both to be Applied")
 		for _, name := range []string{manifestName, "e2e-monitoring-b"} {
 			Eventually(func(g Gomega) {
-				var h hyperfleetv1alpha1.HyperFleetManifest
+				var h hyperfleetv1alpha1.Manifest
 				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: name}, &h)).To(Succeed())
 				g.Expect(h.Status.Phase).To(Equal(hyperfleetv1alpha1.ManifestPhaseApplied))
 			}).Should(Succeed())
@@ -189,12 +189,12 @@ var _ = Describe("HyperFleetManifest lifecycle", func() {
 		Expect(saDesireIDs[0]).NotTo(Equal(saDesireIDs[1]), "document IDs must differ between CRs")
 
 		By("deleting only hfm-a and verifying hfm-b's desires survive")
-		var toDelete hyperfleetv1alpha1.HyperFleetManifest
+		var toDelete hyperfleetv1alpha1.Manifest
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &toDelete)).To(Succeed())
 		Expect(k8sClient.Delete(ctx, &toDelete)).To(Succeed())
 
 		Eventually(func() error {
-			return k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &hyperfleetv1alpha1.HyperFleetManifest{})
+			return k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &hyperfleetv1alpha1.Manifest{})
 		}).ShouldNot(Succeed())
 
 		expectedB := dynamo.NewDocumentID(
@@ -213,7 +213,7 @@ var _ = Describe("HyperFleetManifest lifecycle", func() {
 	})
 
 	It("should write ReadDesires for watched resources and populate resourceStatuses", func() {
-		By("creating a HyperFleetManifest with a watched Job")
+		By("creating a Manifest with a watched Job")
 		hfm := newE2EManifest(manifestName)
 		Expect(k8sClient.Create(ctx, hfm)).To(Succeed())
 
@@ -234,7 +234,7 @@ var _ = Describe("HyperFleetManifest lifecycle", func() {
 
 		By("verifying resourceStatuses is populated with mirrored status")
 		Eventually(func(g Gomega) {
-			var updated hyperfleetv1alpha1.HyperFleetManifest
+			var updated hyperfleetv1alpha1.Manifest
 			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &updated)).To(Succeed())
 			g.Expect(updated.Status.ResourceStatuses).To(HaveLen(1))
 			g.Expect(updated.Status.ResourceStatuses[0].Resource).To(Equal("jobs"))

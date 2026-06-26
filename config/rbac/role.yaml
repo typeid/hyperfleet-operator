@@ -8,7 +8,7 @@ rules:
   - hyperfleet.io
   resources:
   - clusters
-  - hyperfleetmanifests
+  - manifests
   - nodepools
   - placements
   verbs:
@@ -23,7 +23,7 @@ rules:
   - hyperfleet.io
   resources:
   - clusters/finalizers
-  - hyperfleetmanifests/finalizers
+  - manifests/finalizers
   - nodepools/finalizers
   verbs:
   - update
@@ -31,7 +31,7 @@ rules:
   - hyperfleet.io
   resources:
   - clusters/status
-  - hyperfleetmanifests/status
+  - manifests/status
   - nodepools/status
   - placements/status
   verbs:

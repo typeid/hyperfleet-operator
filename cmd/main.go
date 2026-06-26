@@ -173,7 +173,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := (&controller.HyperFleetManifestReconciler{
+	if err := (&controller.ManifestReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 		Dynamo: dynamoClient,

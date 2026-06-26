@@ -11,12 +11,12 @@ metadata:
   labels:
     app.kubernetes.io/name: hyperfleet-operator
     app.kubernetes.io/managed-by: kustomize
-  name: hyperfleetmanifest-viewer-role
+  name: manifest-viewer-role
 rules:
 - apiGroups:
   - hyperfleet.io
   resources:
-  - hyperfleetmanifests
+  - manifests
   verbs:
   - get
   - list
@@ -24,6 +24,6 @@ rules:
 - apiGroups:
   - hyperfleet.io
   resources:
-  - hyperfleetmanifests/status
+  - manifests/status
   verbs:
   - get

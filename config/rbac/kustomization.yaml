@@ -31,7 +31,7 @@ resources:
 - cluster_admin_role.yaml
 - cluster_editor_role.yaml
 - cluster_viewer_role.yaml
-- hyperfleetmanifest_admin_role.yaml
-- hyperfleetmanifest_editor_role.yaml
-- hyperfleetmanifest_viewer_role.yaml
+- manifest_admin_role.yaml
+- manifest_editor_role.yaml
+- manifest_viewer_role.yaml
 

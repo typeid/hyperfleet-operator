@@ -21,7 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-// ManifestPhase represents the lifecycle phase of a HyperFleetManifest.
+// ManifestPhase represents the lifecycle phase of a Manifest.
 // +kubebuilder:validation:Enum=Applied;Deleting
 type ManifestPhase string
 
@@ -30,9 +30,9 @@ const (
 	ManifestPhaseDeleting ManifestPhase = "Deleting"
 )
 
-// HyperFleetManifestSpec defines a set of Kubernetes resources to apply on a management cluster.
+// ManifestSpec defines a set of Kubernetes resources to apply on a management cluster.
 // +kubebuilder:validation:XValidation:rule="self.managementCluster == oldSelf.managementCluster",message="spec.managementCluster is immutable"
-type HyperFleetManifestSpec struct {
+type ManifestSpec struct {
 	// ManagementCluster is the target MC ID (e.g. mc01).
 	// +kubebuilder:validation:MinLength=1
 	ManagementCluster string `json:"managementCluster"`
@@ -79,8 +79,8 @@ type ResourceStatus struct {
 	Status runtime.RawExtension `json:"status,omitempty"`
 }
 
-// HyperFleetManifestStatus defines the observed state of a HyperFleetManifest.
-type HyperFleetManifestStatus struct {
+// ManifestStatus defines the observed state of a Manifest.
+type ManifestStatus struct {
 	// Conditions represent the latest observations of the manifest's state.
 	// Known condition types: DesiresWritten.
 	// +listType=map
@@ -113,33 +113,33 @@ type HyperFleetManifestStatus struct {
 // +kubebuilder:printcolumn:name="Resources",type=integer,JSONPath=".status.appliedResources"
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
 
-// HyperFleetManifest is the Schema for the hyperfleetmanifests API.
+// Manifest is the Schema for the manifests API.
 // It deploys arbitrary Kubernetes resources to a management cluster via DynamoDB desires.
-type HyperFleetManifest struct {
+type Manifest struct {
 	metav1.TypeMeta `json:",inline"`
 
 	// +optional
 	metav1.ObjectMeta `json:"metadata,omitzero"`
 
 	// +required
-	Spec HyperFleetManifestSpec `json:"spec"`
+	Spec ManifestSpec `json:"spec"`
 
 	// +optional
-	Status HyperFleetManifestStatus `json:"status,omitzero"`
+	Status ManifestStatus `json:"status,omitzero"`
 }
 
 // +kubebuilder:object:root=true
 
-// HyperFleetManifestList contains a list of HyperFleetManifest.
-type HyperFleetManifestList struct {
+// ManifestList contains a list of Manifest.
+type ManifestList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitzero"`
-	Items           []HyperFleetManifest `json:"items"`
+	Items           []Manifest `json:"items"`
 }
 
 func init() {
 	SchemeBuilder.Register(func(s *runtime.Scheme) error {
-		s.AddKnownTypes(SchemeGroupVersion, &HyperFleetManifest{}, &HyperFleetManifestList{})
+		s.AddKnownTypes(SchemeGroupVersion, &Manifest{}, &ManifestList{})
 		return nil
 	})
 }

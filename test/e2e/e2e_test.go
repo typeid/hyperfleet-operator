@@ -20,7 +20,7 @@ var _ = Describe("Cross-component interaction", func() {
 		cluster := newE2ECluster("e2e-sep-test")
 		Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
 
-		By("creating a HyperFleetManifest CR on the same MC")
+		By("creating a Manifest CR on the same MC")
 		hfm := newE2EManifest("e2e-monitoring")
 		Expect(k8sClient.Create(ctx, hfm)).To(Succeed())
 
@@ -67,7 +67,7 @@ var _ = Describe("Cross-component interaction", func() {
 		if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: "e2e-sep-test-placement"}, p); err == nil {
 			_ = k8sClient.Delete(ctx, p)
 		}
-		h := &hyperfleetv1alpha1.HyperFleetManifest{}
+		h := &hyperfleetv1alpha1.Manifest{}
 		if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: "e2e-monitoring"}, h); err == nil {
 			controllerutil.RemoveFinalizer(h, "hyperfleet.io/manifest")
 			_ = k8sClient.Update(ctx, h)

@@ -141,13 +141,13 @@ func newE2ENodePool(clusterRef string) *hyperfleetv1alpha1.NodePool {
 	}
 }
 
-func newE2EManifest(name string) *hyperfleetv1alpha1.HyperFleetManifest {
-	return &hyperfleetv1alpha1.HyperFleetManifest{
+func newE2EManifest(name string) *hyperfleetv1alpha1.Manifest {
+	return &hyperfleetv1alpha1.Manifest{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: "111222333444",
 		},
-		Spec: hyperfleetv1alpha1.HyperFleetManifestSpec{
+		Spec: hyperfleetv1alpha1.ManifestSpec{
 			ManagementCluster: "mc01",
 			Resources: []hyperfleetv1alpha1.ResourceTemplate{
 				{

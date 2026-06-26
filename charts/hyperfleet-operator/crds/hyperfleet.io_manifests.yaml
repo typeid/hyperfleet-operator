@@ -4,16 +4,16 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.21.0
-  name: hyperfleetmanifests.hyperfleet.io
+  name: manifests.hyperfleet.io
 spec:
   group: hyperfleet.io
   names:
-    kind: HyperFleetManifest
-    listKind: HyperFleetManifestList
-    plural: hyperfleetmanifests
+    kind: Manifest
+    listKind: ManifestList
+    plural: manifests
     shortNames:
     - hfm
-    singular: hyperfleetmanifest
+    singular: manifest
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
@@ -33,7 +33,7 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          HyperFleetManifest is the Schema for the hyperfleetmanifests API.
+          Manifest is the Schema for the manifests API.
           It deploys arbitrary Kubernetes resources to a management cluster via DynamoDB desires.
         properties:
           apiVersion:
@@ -54,7 +54,7 @@ spec:
           metadata:
             type: object
           spec:
-            description: HyperFleetManifestSpec defines a set of Kubernetes resources
+            description: ManifestSpec defines a set of Kubernetes resources
               to apply on a management cluster.
             properties:
               managementCluster:
@@ -104,8 +104,8 @@ spec:
             - message: spec.managementCluster is immutable
               rule: self.managementCluster == oldSelf.managementCluster
           status:
-            description: HyperFleetManifestStatus defines the observed state of a
-              HyperFleetManifest.
+            description: ManifestStatus defines the observed state of a
+              Manifest.
             properties:
               appliedResources:
                 description: AppliedResources is the number of resources written as

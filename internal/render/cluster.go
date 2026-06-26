@@ -21,8 +21,10 @@ func ClusterResources(cluster *hyperfleetv1alpha1.Cluster, rcfg RegionalConfig) 
 	clusterName := cluster.Spec.Name
 	ns := clusterNamespace(clusterID)
 	h4 := hash4(clusterID)
+	// Zone shard 0 is hardcoded; will be dynamically assigned per-cluster in a future phase.
+	zoneDomain := fmt.Sprintf("0.%s", rcfg.BaseDomain)
 
-	hc, err := hostedCluster(cluster, h4, rcfg)
+	hc, err := hostedCluster(cluster, h4, zoneDomain, rcfg)
 	if err != nil {
 		return nil, err
 	}
@@ -32,7 +34,7 @@ func ClusterResources(cluster *hyperfleetv1alpha1.Cluster, rcfg RegionalConfig) 
 		clusterConfig(clusterID, clusterName, ns),
 		awsIAMAuthConfig(clusterID, clusterName, ns, cluster.Spec.CreatorARN),
 		pullSecret(clusterID, ns),
-		apiServingCert(clusterID, clusterName, h4, rcfg.BaseDomain, ns),
+		apiServingCert(clusterID, clusterName, h4, zoneDomain, ns),
 		hc,
 		sshKey(clusterID, ns),
 	}, nil
@@ -177,11 +179,11 @@ func apiServingCert(clusterID, clusterName, h4, baseDomain, ns string) Resource 
 	}
 }
 
-func hostedCluster(cluster *hyperfleetv1alpha1.Cluster, h4 string, rcfg RegionalConfig) (Resource, error) {
+func hostedCluster(cluster *hyperfleetv1alpha1.Cluster, h4, zoneDomain string, rcfg RegionalConfig) (Resource, error) {
 	clusterID := cluster.Name
 	clusterName := cluster.Spec.Name
 	ns := clusterNamespace(clusterID)
-	baseDomain := rcfg.BaseDomain
+	baseDomain := zoneDomain
 	zone := rcfg.AWSRegion + "a"
 	roles := cluster.Spec.Platform.AWS.Roles
 
