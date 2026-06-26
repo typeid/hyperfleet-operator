@@ -41,7 +41,7 @@ func NewManager(
 		dbClient:      dbClient,
 		streamsClient: streamsClient,
 		mcLoader:      mcLoader,
-		onChange:       onChange,
+		onChange:      onChange,
 		logger:        logger,
 	}
 }

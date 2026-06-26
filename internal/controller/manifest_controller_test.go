@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -149,9 +150,12 @@ var _ = Describe("Manifest Controller", func() {
 
 			var updated hyperfleetv1alpha1.Manifest
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &updated)).To(Succeed())
-			Expect(updated.Status.Phase).To(Equal(hyperfleetv1alpha1.ManifestPhaseApplied))
+			Expect(updated.Status.Phase).To(Equal(hyperfleetv1alpha1.ManifestPhaseSyncing))
 			Expect(updated.Status.AppliedResources).To(Equal(int32(4)))
-			Expect(meta.IsStatusConditionTrue(updated.Status.Conditions, "DesiresWritten")).To(BeTrue())
+			cond := meta.FindStatusCondition(updated.Status.Conditions, ConditionSynced)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("AwaitingSync"))
 		})
 
 		It("should scope document IDs to the CR identity", func() {
@@ -420,7 +424,7 @@ var _ = Describe("Manifest Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(fd.readCount).To(Equal(0))
-			Expect(result.RequeueAfter).To(BeZero(), "should not requeue without watched resources")
+			Expect(result.RequeueAfter).To(Equal(15*time.Second), "should requeue to poll Synced status")
 		})
 
 		It("should handle not-found gracefully", func() {

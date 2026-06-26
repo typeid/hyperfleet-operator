@@ -154,6 +154,7 @@ func (in *ClusterStatus) DeepCopyInto(out *ClusterStatus) {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
 	}
+	out.ControlPlaneEndpoint = in.ControlPlaneEndpoint
 	if in.PlacementRef != nil {
 		in, out := &in.PlacementRef, &out.PlacementRef
 		*out = new(PlacementReference)

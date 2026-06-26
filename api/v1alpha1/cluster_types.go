@@ -127,7 +127,7 @@ type AWSPlatformSpec struct {
 // ClusterStatus defines the observed state of a Cluster.
 type ClusterStatus struct {
 	// Conditions represent the latest observations of the cluster's state.
-	// Known condition types: Available, Degraded, DesiresWritten.
+	// Known condition types: Synced, Available, Degraded.
 	// +listType=map
 	// +listMapKey=type
 	// +optional
@@ -139,7 +139,7 @@ type ClusterStatus struct {
 
 	// ControlPlaneEndpoint is the API server endpoint for the hosted cluster.
 	// +optional
-	ControlPlaneEndpoint string `json:"controlPlaneEndpoint,omitempty"`
+	ControlPlaneEndpoint hypershiftv1beta1.APIEndpoint `json:"controlPlaneEndpoint,omitempty"`
 
 	// Version is the running OpenShift version.
 	// +optional
@@ -169,7 +169,7 @@ type PlacementReference struct {
 // +kubebuilder:printcolumn:name="Display Name",type=string,JSONPath=".spec.name"
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="MC",type=string,JSONPath=".status.placementRef.managementCluster"
-// +kubebuilder:printcolumn:name="Endpoint",type=string,JSONPath=".status.controlPlaneEndpoint",priority=1
+// +kubebuilder:printcolumn:name="Endpoint",type=string,JSONPath=".status.controlPlaneEndpoint.host",priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
 
 // Cluster is the Schema for the clusters API.

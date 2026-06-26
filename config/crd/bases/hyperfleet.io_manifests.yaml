@@ -54,8 +54,8 @@ spec:
           metadata:
             type: object
           spec:
-            description: ManifestSpec defines a set of Kubernetes resources
-              to apply on a management cluster.
+            description: ManifestSpec defines a set of Kubernetes resources to apply
+              on a management cluster.
             properties:
               managementCluster:
                 description: ManagementCluster is the target MC ID (e.g. mc01).
@@ -104,8 +104,7 @@ spec:
             - message: spec.managementCluster is immutable
               rule: self.managementCluster == oldSelf.managementCluster
           status:
-            description: ManifestStatus defines the observed state of a
-              Manifest.
+            description: ManifestStatus defines the observed state of a Manifest.
             properties:
               appliedResources:
                 description: AppliedResources is the number of resources written as
@@ -115,7 +114,7 @@ spec:
               conditions:
                 description: |-
                   Conditions represent the latest observations of the manifest's state.
-                  Known condition types: DesiresWritten.
+                  Known condition types: Synced.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -182,6 +181,7 @@ spec:
               phase:
                 description: Phase summarizes the manifest's lifecycle state.
                 enum:
+                - Syncing
                 - Applied
                 - Deleting
                 type: string

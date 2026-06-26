@@ -41,7 +41,7 @@ func NewWatcher(
 		dbClient:      dbClient,
 		streamsClient: streamsClient,
 		tableName:     tableName,
-		onChange:       onChange,
+		onChange:      onChange,
 		logger:        logger.With("table", tableName),
 	}
 }

@@ -22,10 +22,11 @@ import (
 )
 
 // ManifestPhase represents the lifecycle phase of a Manifest.
-// +kubebuilder:validation:Enum=Applied;Deleting
+// +kubebuilder:validation:Enum=Syncing;Applied;Deleting
 type ManifestPhase string
 
 const (
+	ManifestPhaseSyncing  ManifestPhase = "Syncing"
 	ManifestPhaseApplied  ManifestPhase = "Applied"
 	ManifestPhaseDeleting ManifestPhase = "Deleting"
 )
@@ -82,7 +83,7 @@ type ResourceStatus struct {
 // ManifestStatus defines the observed state of a Manifest.
 type ManifestStatus struct {
 	// Conditions represent the latest observations of the manifest's state.
-	// Known condition types: DesiresWritten.
+	// Known condition types: Synced.
 	// +listType=map
 	// +listMapKey=type
 	// +optional

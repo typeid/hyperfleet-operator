@@ -26,7 +26,7 @@ spec:
     - jsonPath: .status.placementRef.managementCluster
       name: MC
       type: string
-    - jsonPath: .status.controlPlaneEndpoint
+    - jsonPath: .status.controlPlaneEndpoint.host
       name: Endpoint
       priority: 1
       type: string
@@ -414,7 +414,7 @@ spec:
               conditions:
                 description: |-
                   Conditions represent the latest observations of the cluster's state.
-                  Known condition types: Available, Degraded, DesiresWritten.
+                  Known condition types: Synced, Available, Degraded.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -476,7 +476,19 @@ spec:
               controlPlaneEndpoint:
                 description: ControlPlaneEndpoint is the API server endpoint for the
                   hosted cluster.
-                type: string
+                properties:
+                  host:
+                    description: host is the hostname on which the API server is serving.
+                    maxLength: 255
+                    type: string
+                  port:
+                    description: port is the port on which the API server is serving.
+                    format: int32
+                    type: integer
+                required:
+                - host
+                - port
+                type: object
               observedGeneration:
                 description: ObservedGeneration is the most recent generation observed
                   by the controller.

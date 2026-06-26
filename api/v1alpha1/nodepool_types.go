@@ -86,7 +86,7 @@ type AWSNodePoolSpec struct {
 // NodePoolStatus defines the observed state of a NodePool.
 type NodePoolStatus struct {
 	// Conditions represent the latest observations of the node pool's state.
-	// Known condition types: Ready.
+	// Known condition types: Synced, Ready.
 	// +listType=map
 	// +listMapKey=type
 	// +optional

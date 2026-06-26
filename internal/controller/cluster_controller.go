@@ -35,6 +35,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	hypershiftv1beta1 "github.com/openshift/hypershift/api/hypershift/v1beta1"
 	hyperfleetv1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
 	"github.com/typeid/hyperfleet-operator/internal/dynamo"
 	"github.com/typeid/hyperfleet-operator/internal/render"
@@ -145,7 +146,14 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 	}
 
-	// Set DesiresWritten condition.
+	// Build entries for Synced condition checking.
+	var applyEntries []DesireStatusEntry
+	for _, m := range resources {
+		docID := dynamo.NewDocumentID(taskKey, m.Group, m.Version, m.Resource, m.Namespace, m.Name)
+		applyEntries = append(applyEntries, DesireStatusEntry{DocID: docID, Resource: m.Resource, Name: m.Name})
+	}
+
+	// Set Synced condition based on apply desire statuses.
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var latest hyperfleetv1alpha1.Cluster
 		if err := r.Get(ctx, client.ObjectKeyFromObject(&cluster), &latest); err != nil {
@@ -154,16 +162,11 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			}
 			return err
 		}
-		meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
-			Type:               "DesiresWritten",
-			Status:             metav1.ConditionTrue,
-			Reason:             "ApplyDesiresCreated",
-			Message:            fmt.Sprintf("Wrote %d ApplyDesires to DynamoDB", len(resources)),
-			ObservedGeneration: latest.Generation,
-		})
+		syncedCond := CheckApplyDesireStatuses(ctx, r.Dynamo, statusPrefix, applyEntries, latest.Generation)
+		meta.SetStatusCondition(&latest.Status.Conditions, syncedCond)
 		return r.Status().Update(ctx, &latest)
 	}); err != nil {
-		return ctrl.Result{}, fmt.Errorf("set DesiresWritten condition: %w", err)
+		return ctrl.Result{}, fmt.Errorf("set Synced condition: %w", err)
 	}
 
 	// Create ReadDesire for HostedCluster status feedback.
@@ -269,29 +272,37 @@ func (r *ClusterReconciler) reconcileDelete(ctx context.Context, cluster *hyperf
 			}
 		}
 
-		// Step 2: Delete HostedCluster first so HyperShift can clean up worker
-		// nodes and load balancers before the namespace is removed.
+		// Build delete entries for Synced condition tracking.
 		hcRef := dynamo.ResourceReference{
 			Group: "hypershift.openshift.io", Version: "v1beta1",
 			Resource: "hostedclusters", Namespace: ns, Name: hcName,
 		}
+		nsRef := dynamo.ResourceReference{
+			Group: "", Version: "v1", Resource: "namespaces", Name: ns,
+		}
+		deleteEntries := []DesireStatusEntry{
+			{DocID: dynamo.NewDocumentID(taskKey+"-delete", hcRef.Group, hcRef.Version, hcRef.Resource, hcRef.Namespace, hcRef.Name), Resource: hcRef.Resource, Name: hcRef.Name},
+			{DocID: dynamo.NewDocumentID(taskKey+"-delete", nsRef.Group, nsRef.Version, nsRef.Resource, nsRef.Namespace, nsRef.Name), Resource: nsRef.Resource, Name: nsRef.Name},
+		}
+
+		// Step 2: Delete HostedCluster first so HyperShift can clean up worker
+		// nodes and load balancers before the namespace is removed.
 		if result, err := r.writeAndWaitDeleteDesire(ctx, specsPrefix, statusPrefix, mc, cluster.Name, hcRef); err != nil || !result.IsZero() {
 			if err != nil {
 				return ctrl.Result{}, fmt.Errorf("delete hostedcluster: %w", err)
 			}
 			log.Info("Waiting for HostedCluster deletion", "hostedCluster", hcName)
+			r.setSyncedCondition(ctx, cluster, CheckDeleteDesireStatuses(ctx, r.Dynamo, statusPrefix, deleteEntries, cluster.Generation))
 			return result, nil
 		}
 
 		// Step 3: Delete the cluster namespace to clean up all remaining resources.
-		nsRef := dynamo.ResourceReference{
-			Group: "", Version: "v1", Resource: "namespaces", Name: ns,
-		}
 		if result, err := r.writeAndWaitDeleteDesire(ctx, specsPrefix, statusPrefix, mc, cluster.Name, nsRef); err != nil || !result.IsZero() {
 			if err != nil {
 				return ctrl.Result{}, fmt.Errorf("delete namespace: %w", err)
 			}
 			log.Info("Waiting for namespace deletion", "namespace", ns)
+			r.setSyncedCondition(ctx, cluster, CheckDeleteDesireStatuses(ctx, r.Dynamo, statusPrefix, deleteEntries, cluster.Generation))
 			return result, nil
 		}
 
@@ -356,14 +367,20 @@ func (r *ClusterReconciler) writeAndWaitDeleteDesire(ctx context.Context, specsP
 func (r *ClusterReconciler) updateStatusFromDynamo(ctx context.Context, cluster *hyperfleetv1alpha1.Cluster, statusPrefix, readDocID string) {
 	log := logf.FromContext(ctx)
 
-	readStatus, err := r.Dynamo.GetReadDesireStatus(ctx, statusPrefix, readDocID)
+	// Rebuild apply entries for Synced condition refresh.
+	resources, err := render.ClusterResources(cluster, r.RegionalConfig)
 	if err != nil {
-		log.V(1).Info("ReadDesire status not yet available", "error", err)
-		return
+		log.Error(err, "Failed to render cluster resources for status check")
+	}
+	var applyEntries []DesireStatusEntry
+	for _, m := range resources {
+		docID := dynamo.NewDocumentID(taskKey, m.Group, m.Version, m.Resource, m.Namespace, m.Name)
+		applyEntries = append(applyEntries, DesireStatusEntry{DocID: docID, Resource: m.Resource, Name: m.Name})
 	}
 
-	if readStatus.KubeContent == nil {
-		return
+	readStatus, readErr := r.Dynamo.GetReadDesireStatus(ctx, statusPrefix, readDocID)
+	if readErr != nil {
+		log.V(1).Info("ReadDesire status not yet available", "error", readErr)
 	}
 
 	var hc struct {
@@ -374,14 +391,13 @@ func (r *ClusterReconciler) updateStatusFromDynamo(ctx context.Context, cluster 
 					Version string `json:"version"`
 				} `json:"history"`
 			} `json:"version"`
-			ControlPlaneEndpoint struct {
-				Host string `json:"host"`
-			} `json:"controlPlaneEndpoint"`
+			ControlPlaneEndpoint hypershiftv1beta1.APIEndpoint `json:"controlPlaneEndpoint"`
 		} `json:"status"`
 	}
-	if err := json.Unmarshal(readStatus.KubeContent, &hc); err != nil {
-		log.Error(err, "Failed to unmarshal HostedCluster status")
-		return
+	if readStatus != nil && readStatus.KubeContent != nil {
+		if err := json.Unmarshal(readStatus.KubeContent, &hc); err != nil {
+			log.Error(err, "Failed to unmarshal HostedCluster status")
+		}
 	}
 
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -392,17 +408,36 @@ func (r *ClusterReconciler) updateStatusFromDynamo(ctx context.Context, cluster 
 			}
 			return err
 		}
-		for _, cond := range hc.Status.Conditions {
-			if cond.Type == "Available" || cond.Type == "Degraded" {
-				meta.SetStatusCondition(&latest.Status.Conditions, cond)
+
+		// Update Synced condition from apply desire statuses.
+		if len(applyEntries) > 0 {
+			syncedCond := CheckApplyDesireStatuses(ctx, r.Dynamo, statusPrefix, applyEntries, latest.Generation)
+			meta.SetStatusCondition(&latest.Status.Conditions, syncedCond)
+		}
+
+		// Surface ReadDesire failures as Available=Unknown.
+		if readErr != nil {
+			meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+				Type:               "Available",
+				Status:             metav1.ConditionUnknown,
+				Reason:             "StatusFeedbackFailed",
+				Message:            fmt.Sprintf("ReadDesire for hostedclusters/%s: %v", cluster.Spec.Name, readErr),
+				ObservedGeneration: latest.Generation,
+			})
+		} else if readStatus != nil && readStatus.KubeContent != nil {
+			for _, cond := range hc.Status.Conditions {
+				if cond.Type == "Available" || cond.Type == "Degraded" {
+					meta.SetStatusCondition(&latest.Status.Conditions, cond)
+				}
+			}
+			if hc.Status.ControlPlaneEndpoint.Host != "" {
+				latest.Status.ControlPlaneEndpoint = hc.Status.ControlPlaneEndpoint
+			}
+			if len(hc.Status.Version.History) > 0 {
+				latest.Status.Version = hc.Status.Version.History[0].Version
 			}
 		}
-		if hc.Status.ControlPlaneEndpoint.Host != "" {
-			latest.Status.ControlPlaneEndpoint = hc.Status.ControlPlaneEndpoint.Host
-		}
-		if len(hc.Status.Version.History) > 0 {
-			latest.Status.Version = hc.Status.Version.History[0].Version
-		}
+
 		if meta.IsStatusConditionTrue(latest.Status.Conditions, "Available") &&
 			!meta.IsStatusConditionTrue(latest.Status.Conditions, "Degraded") {
 			latest.Status.Phase = hyperfleetv1alpha1.ClusterPhaseReady
@@ -411,6 +446,22 @@ func (r *ClusterReconciler) updateStatusFromDynamo(ctx context.Context, cluster 
 		return r.Status().Update(ctx, &latest)
 	}); err != nil {
 		log.Error(err, "Failed to update cluster status from DynamoDB feedback")
+	}
+}
+
+func (r *ClusterReconciler) setSyncedCondition(ctx context.Context, cluster *hyperfleetv1alpha1.Cluster, cond metav1.Condition) {
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var latest hyperfleetv1alpha1.Cluster
+		if err := r.Get(ctx, client.ObjectKeyFromObject(cluster), &latest); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil
+			}
+			return err
+		}
+		meta.SetStatusCondition(&latest.Status.Conditions, cond)
+		return r.Status().Update(ctx, &latest)
+	}); err != nil {
+		logf.FromContext(ctx).Error(err, "Failed to update Synced condition")
 	}
 }
 

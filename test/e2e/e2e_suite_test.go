@@ -191,6 +191,56 @@ var _ = BeforeSuite(func() {
 		Expect(mgr.Start(ctx)).To(Succeed())
 	}()
 
+	// Simulate kube-applier-aws: poll specs-applydesires and write status
+	// entries with Successful=True so controllers see apply confirmations.
+	go func() {
+		defer GinkgoRecover()
+		specsTable := mc + "-specs-applydesires"
+		statusTable := mc + "-status-applydesires"
+
+		completeStatus := dynamo.ApplyDesireStatus{
+			Conditions: []metav1.Condition{{
+				Type:               dynamo.DesireConditionSuccessful,
+				Status:             metav1.ConditionTrue,
+				Reason:             "NoErrors",
+				LastTransitionTime: metav1.Now(),
+			}},
+		}
+		statusAttrs, err := attributevalue.MarshalMap(completeStatus)
+		Expect(err).NotTo(HaveOccurred())
+
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				out, err := dynamoDBCli.Scan(ctx, &dynamodb.ScanInput{
+					TableName: aws.String(specsTable),
+				})
+				if err != nil {
+					continue
+				}
+				for _, item := range out.Items {
+					docID, ok := item["documentID"]
+					if !ok {
+						continue
+					}
+					statusItem := map[string]dynamodbtypes.AttributeValue{
+						"documentID": docID,
+						"status":     &dynamodbtypes.AttributeValueMemberM{Value: statusAttrs},
+					}
+					_, _ = dynamoDBCli.PutItem(ctx, &dynamodb.PutItemInput{
+						TableName:           aws.String(statusTable),
+						Item:                statusItem,
+						ConditionExpression: aws.String("attribute_not_exists(documentID)"),
+					})
+				}
+			}
+		}
+	}()
+
 	// Simulate kube-applier-aws: poll specs-deletedesires and write status
 	// entries with Successful=True so controllers see deletion confirmations.
 	go func() {

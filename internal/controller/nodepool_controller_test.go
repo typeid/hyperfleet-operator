@@ -256,7 +256,14 @@ var _ = Describe("NodePool Controller", func() {
 			Expect(k8sClient.Create(ctx, np)).To(Succeed())
 
 			fd := &fakeDynamo{
-				applyStatus: &dynamo.ApplyDesireStatus{AppliedResourceGeneration: 1},
+				applyStatus: &dynamo.ApplyDesireStatus{
+					AppliedResourceGeneration: 1,
+					Conditions: []metav1.Condition{{
+						Type:   dynamo.DesireConditionSuccessful,
+						Status: metav1.ConditionTrue,
+						Reason: "NoErrors",
+					}},
+				},
 				readStatus: &dynamo.ReadDesireStatus{
 					KubeContent: []byte(`{"status":{"conditions":[{"type":"Ready","status":"True","reason":"AsExpected","message":"All nodes ready","lastTransitionTime":"2026-06-25T10:00:00Z"}]}}`),
 				},

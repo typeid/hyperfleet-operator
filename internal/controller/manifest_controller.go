@@ -91,8 +91,10 @@ func (r *ManifestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	specsPrefix := dynamo.SpecsPrefix(mc)
 	scopedTaskKey := manifestScopedTaskKey(&hfm)
 
-	// Build set of current resource document IDs to detect orphans.
+	// Build set of current resource document IDs to detect orphans,
+	// and entries for Synced condition checking.
 	currentDocIDs := make(map[string]struct{}, len(hfm.Spec.Resources))
+	var applyEntries []DesireStatusEntry
 
 	for _, res := range hfm.Spec.Resources {
 		group, version, name, namespace, err := extractResourceMeta(res.Content.Raw)
@@ -102,6 +104,7 @@ func (r *ManifestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 		docID := dynamo.NewDocumentID(scopedTaskKey, group, version, res.Resource, namespace, name)
 		currentDocIDs[docID] = struct{}{}
+		applyEntries = append(applyEntries, DesireStatusEntry{DocID: docID, Resource: res.Resource, Name: name})
 
 		desire := &dynamo.ApplyDesire{
 			DynamoDBMetadata: dynamo.DynamoDBMetadata{DocumentID: docID},
@@ -166,6 +169,9 @@ func (r *ManifestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		r.updateResourceStatuses(ctx, &hfm, statusPrefix, scopedTaskKey)
 	}
 
+	// Set Synced condition and phase based on apply desire statuses.
+	syncedCond := CheckApplyDesireStatuses(ctx, r.Dynamo, statusPrefix, applyEntries, hfm.Generation)
+
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var latest hyperfleetv1alpha1.Manifest
 		if err := r.Get(ctx, client.ObjectKeyFromObject(&hfm), &latest); err != nil {
@@ -174,14 +180,12 @@ func (r *ManifestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			}
 			return err
 		}
-		meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
-			Type:               "DesiresWritten",
-			Status:             metav1.ConditionTrue,
-			Reason:             "ApplyDesiresCreated",
-			Message:            fmt.Sprintf("Wrote %d ApplyDesires to DynamoDB", len(hfm.Spec.Resources)),
-			ObservedGeneration: latest.Generation,
-		})
-		latest.Status.Phase = hyperfleetv1alpha1.ManifestPhaseApplied
+		meta.SetStatusCondition(&latest.Status.Conditions, syncedCond)
+		if syncedCond.Status == metav1.ConditionTrue {
+			latest.Status.Phase = hyperfleetv1alpha1.ManifestPhaseApplied
+		} else {
+			latest.Status.Phase = hyperfleetv1alpha1.ManifestPhaseSyncing
+		}
 		latest.Status.AppliedResources = int32(len(hfm.Spec.Resources))
 		latest.Status.ObservedGeneration = latest.Generation
 		return r.Status().Update(ctx, &latest)
@@ -189,6 +193,9 @@ func (r *ManifestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, fmt.Errorf("update status: %w", err)
 	}
 
+	if syncedCond.Status != metav1.ConditionTrue {
+		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+	}
 	if hasWatched {
 		return ctrl.Result{RequeueAfter: manifestStatusRefreshDelay}, nil
 	}
@@ -250,10 +257,17 @@ func (r *ManifestReconciler) reconcileDelete(ctx context.Context, hfm *hyperflee
 		entries = append(entries, deleteEntry{resource: res.Resource, name: name, docID: docID})
 	}
 
+	// Build DesireStatusEntry list for Synced condition tracking.
+	var deleteStatusEntries []DesireStatusEntry
+	for _, e := range entries {
+		deleteStatusEntries = append(deleteStatusEntries, DesireStatusEntry{DocID: e.docID, Resource: e.resource, Name: e.name})
+	}
+
 	for _, e := range entries {
 		deleteStatus, err := r.Dynamo.GetDeleteDesireStatus(ctx, statusPrefix, e.docID)
 		if err != nil || !meta.IsStatusConditionTrue(deleteStatus.Conditions, dynamo.DesireConditionSuccessful) {
 			log.Info("Waiting for resource deletion to complete", "pendingResource", e.name)
+			r.setSyncedCondition(ctx, hfm, CheckDeleteDesireStatuses(ctx, r.Dynamo, statusPrefix, deleteStatusEntries, hfm.Generation))
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
 	}
@@ -369,6 +383,22 @@ func (r *ManifestReconciler) updateResourceStatuses(ctx context.Context, hfm *hy
 		return r.Status().Update(ctx, &latest)
 	}); err != nil {
 		log.Error(err, "failed to update resourceStatuses")
+	}
+}
+
+func (r *ManifestReconciler) setSyncedCondition(ctx context.Context, hfm *hyperfleetv1alpha1.Manifest, cond metav1.Condition) {
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var latest hyperfleetv1alpha1.Manifest
+		if err := r.Get(ctx, client.ObjectKeyFromObject(hfm), &latest); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil
+			}
+			return err
+		}
+		meta.SetStatusCondition(&latest.Status.Conditions, cond)
+		return r.Status().Update(ctx, &latest)
+	}); err != nil {
+		logf.FromContext(ctx).Error(err, "Failed to update Synced condition")
 	}
 }
 

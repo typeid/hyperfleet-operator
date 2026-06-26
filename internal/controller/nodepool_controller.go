@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -100,10 +101,11 @@ func (r *NodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	docID := dynamo.NewDocumentID(taskKey, m.Group, m.Version, m.Resource, ns, m.Name)
 	readDocID := dynamo.NewDocumentID(taskKey+"-read", m.Group, m.Version, m.Resource, ns, m.Name)
+	applyEntry := DesireStatusEntry{DocID: docID, Resource: m.Resource, Name: m.Name}
 
 	// Skip full reconcile when spec hasn't changed (status-only update).
 	if nodePool.Generation == nodePool.Status.ObservedGeneration {
-		r.updateStatusFromDynamo(ctx, &nodePool, statusPrefix, docID, readDocID)
+		r.updateStatusFromDynamo(ctx, &nodePool, statusPrefix, applyEntry, readDocID)
 		return ctrl.Result{RequeueAfter: statusRefreshDelay}, nil
 	}
 
@@ -151,7 +153,7 @@ func (r *NodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	// Read status feedback from DynamoDB.
-	r.updateStatusFromDynamo(ctx, &nodePool, statusPrefix, docID, readDocID)
+	r.updateStatusFromDynamo(ctx, &nodePool, statusPrefix, applyEntry, readDocID)
 
 	// Re-read to see phase set by updateStatusFromDynamo.
 	_ = r.Get(ctx, client.ObjectKeyFromObject(&nodePool), &nodePool)
@@ -209,8 +211,11 @@ func (r *NodePoolReconciler) reconcileDelete(ctx context.Context, nodePool *hype
 			return ctrl.Result{}, fmt.Errorf("put delete desire: %w", err)
 		}
 
-		deleteStatus, err := r.Dynamo.GetDeleteDesireStatus(ctx, statusPrefix, docID)
-		if err != nil || !meta.IsStatusConditionTrue(deleteStatus.Conditions, dynamo.DesireConditionSuccessful) {
+		deleteEntry := DesireStatusEntry{DocID: docID, Resource: m.Resource, Name: m.Name}
+		deleteSynced := CheckDeleteDesireStatuses(ctx, r.Dynamo, statusPrefix, []DesireStatusEntry{deleteEntry}, nodePool.Generation)
+		r.setSyncedCondition(ctx, nodePool, deleteSynced)
+
+		if deleteSynced.Status != metav1.ConditionTrue {
 			log.Info("Waiting for DeleteDesire confirmation", "nodePool", nodePool.Name)
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
@@ -240,20 +245,16 @@ func (r *NodePoolReconciler) reconcileDelete(ctx context.Context, nodePool *hype
 	return ctrl.Result{}, nil
 }
 
-func (r *NodePoolReconciler) updateStatusFromDynamo(ctx context.Context, nodePool *hyperfleetv1alpha1.NodePool, statusPrefix, applyDocID, readDocID string) {
+func (r *NodePoolReconciler) updateStatusFromDynamo(ctx context.Context, nodePool *hyperfleetv1alpha1.NodePool, statusPrefix string, applyEntry DesireStatusEntry, readDocID string) {
 	log := logf.FromContext(ctx)
 
-	applyStatus, applyErr := r.Dynamo.GetApplyDesireStatus(ctx, statusPrefix, applyDocID)
-	if applyErr != nil {
-		log.V(1).Info("ApplyDesire status not yet available", "error", applyErr)
-	}
+	syncedCond := CheckApplyDesireStatuses(ctx, r.Dynamo, statusPrefix, []DesireStatusEntry{applyEntry}, nodePool.Generation)
 
 	readStatus, readErr := r.Dynamo.GetReadDesireStatus(ctx, statusPrefix, readDocID)
 	if readErr != nil {
 		log.V(1).Info("ReadDesire status not yet available", "error", readErr)
 	}
 
-	// Parse HyperShift NodePool conditions from ReadDesire KubeContent.
 	var npConditions []metav1.Condition
 	if readStatus != nil && readStatus.KubeContent != nil {
 		var np struct {
@@ -276,12 +277,13 @@ func (r *NodePoolReconciler) updateStatusFromDynamo(ctx context.Context, nodePoo
 			}
 			return err
 		}
-		if applyStatus != nil && applyStatus.AppliedResourceGeneration > 0 {
+		meta.SetStatusCondition(&latest.Status.Conditions, syncedCond)
+		if readErr != nil && !errors.Is(readErr, dynamo.ErrNotFound) {
 			meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
-				Type:               "Applied",
-				Status:             metav1.ConditionTrue,
-				Reason:             "DesireApplied",
-				Message:            "NodePool applied to management cluster",
+				Type:               "Available",
+				Status:             metav1.ConditionUnknown,
+				Reason:             "StatusFeedbackFailed",
+				Message:            fmt.Sprintf("Failed to read status from DynamoDB: %v", readErr),
 				ObservedGeneration: latest.Generation,
 			})
 		}
@@ -320,6 +322,22 @@ func (r *NodePoolReconciler) setPhase(ctx context.Context, nodePool *hyperfleetv
 		return r.Status().Update(ctx, &latest)
 	}); err != nil {
 		logf.FromContext(ctx).Error(err, "Failed to update nodepool phase", "phase", phase)
+	}
+}
+
+func (r *NodePoolReconciler) setSyncedCondition(ctx context.Context, nodePool *hyperfleetv1alpha1.NodePool, cond metav1.Condition) {
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var latest hyperfleetv1alpha1.NodePool
+		if err := r.Get(ctx, client.ObjectKeyFromObject(nodePool), &latest); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil
+			}
+			return err
+		}
+		meta.SetStatusCondition(&latest.Status.Conditions, cond)
+		return r.Status().Update(ctx, &latest)
+	}); err != nil {
+		logf.FromContext(ctx).Error(err, "Failed to update Synced condition")
 	}
 }
 
