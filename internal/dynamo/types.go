@@ -6,6 +6,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// DesireConditionSuccessful is the condition type that kube-applier-aws sets on
+// desire statuses. "True" with reason "NoErrors" means the operation completed
+// (resource applied, deleted, or read). "False" with reasons like
+// "WaitingForDeletion" or "KubeAPIError" indicates in-progress or failure.
+const DesireConditionSuccessful = "Successful"
+
 // ResourceReference identifies a Kubernetes resource without needing a RESTMapper.
 // Resource is the plural form (e.g. "nodepools") because kube-applier-aws uses it
 // to build Kubernetes REST paths. This could be eliminated if kube-applier-aws

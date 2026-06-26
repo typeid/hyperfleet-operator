@@ -209,7 +209,8 @@ func (r *NodePoolReconciler) reconcileDelete(ctx context.Context, nodePool *hype
 			return ctrl.Result{}, fmt.Errorf("put delete desire: %w", err)
 		}
 
-		if _, err := r.Dynamo.GetDeleteDesireStatus(ctx, statusPrefix, docID); err != nil {
+		deleteStatus, err := r.Dynamo.GetDeleteDesireStatus(ctx, statusPrefix, docID)
+		if err != nil || !meta.IsStatusConditionTrue(deleteStatus.Conditions, dynamo.DesireConditionSuccessful) {
 			log.Info("Waiting for DeleteDesire confirmation", "nodePool", nodePool.Name)
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}

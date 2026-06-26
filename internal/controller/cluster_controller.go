@@ -346,7 +346,8 @@ func (r *ClusterReconciler) writeAndWaitDeleteDesire(ctx context.Context, specsP
 	if err := r.Dynamo.PutDeleteDesire(ctx, specsPrefix, desire); err != nil {
 		return ctrl.Result{}, err
 	}
-	if _, err := r.Dynamo.GetDeleteDesireStatus(ctx, statusPrefix, docID); err != nil {
+	status, err := r.Dynamo.GetDeleteDesireStatus(ctx, statusPrefix, docID)
+	if err != nil || !meta.IsStatusConditionTrue(status.Conditions, dynamo.DesireConditionSuccessful) {
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil

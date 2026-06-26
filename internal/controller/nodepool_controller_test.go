@@ -188,8 +188,14 @@ var _ = Describe("NodePool Controller", func() {
 			Expect(fd.deletes[0].Spec.TargetItem.Resource).To(Equal("nodepools"))
 			Expect(result.RequeueAfter).NotTo(BeZero(), "should requeue while waiting for confirmation")
 
-			// Simulate kube-applier-aws confirming the deletion.
-			fd.deleteStatus = &dynamo.DeleteDesireStatus{}
+			// Simulate kube-applier-aws confirming the deletion (Successful=True).
+			fd.deleteStatus = &dynamo.DeleteDesireStatus{
+				Conditions: []metav1.Condition{{
+					Type:   dynamo.DesireConditionSuccessful,
+					Status: metav1.ConditionTrue,
+					Reason: "NoErrors",
+				}},
+			}
 
 			// Second deletion reconcile: confirmation found → removes finalizer.
 			_, err = reconciler.Reconcile(ctx, reconcile.Request{
@@ -290,7 +296,13 @@ var _ = Describe("NodePool Controller", func() {
 			Expect(k8sClient.Create(ctx, np)).To(Succeed())
 
 			fd := &fakeDynamo{
-				deleteStatus: &dynamo.DeleteDesireStatus{},
+				deleteStatus: &dynamo.DeleteDesireStatus{
+					Conditions: []metav1.Condition{{
+						Type:   dynamo.DesireConditionSuccessful,
+						Status: metav1.ConditionTrue,
+						Reason: "NoErrors",
+					}},
+				},
 			}
 			reconciler := &NodePoolReconciler{
 				Client: k8sClient,

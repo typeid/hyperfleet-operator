@@ -251,8 +251,9 @@ func (r *ManifestReconciler) reconcileDelete(ctx context.Context, hfm *hyperflee
 	}
 
 	for _, e := range entries {
-		if _, err := r.Dynamo.GetDeleteDesireStatus(ctx, statusPrefix, e.docID); err != nil {
-			log.Info("Waiting for DeleteDesire confirmations", "pendingResource", e.name)
+		deleteStatus, err := r.Dynamo.GetDeleteDesireStatus(ctx, statusPrefix, e.docID)
+		if err != nil || !meta.IsStatusConditionTrue(deleteStatus.Conditions, dynamo.DesireConditionSuccessful) {
+			log.Info("Waiting for resource deletion to complete", "pendingResource", e.name)
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
 	}

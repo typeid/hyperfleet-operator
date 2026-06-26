@@ -256,8 +256,14 @@ var _ = Describe("Manifest Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &toDelete)).To(Succeed())
 			Expect(k8sClient.Delete(ctx, &toDelete)).To(Succeed())
 
-			// Simulate all DeleteDesires confirmed.
-			fd.deleteStatus = &dynamo.DeleteDesireStatus{}
+			// Simulate all DeleteDesires confirmed (Successful=True).
+			fd.deleteStatus = &dynamo.DeleteDesireStatus{
+				Conditions: []metav1.Condition{{
+					Type:   dynamo.DesireConditionSuccessful,
+					Status: metav1.ConditionTrue,
+					Reason: "NoErrors",
+				}},
+			}
 
 			// Reconcile deletion with confirmation.
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
@@ -489,8 +495,14 @@ var _ = Describe("Manifest Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &toDelete)).To(Succeed())
 			Expect(k8sClient.Delete(ctx, &toDelete)).To(Succeed())
 
-			// Simulate all DeleteDesires confirmed so finalizer is removed.
-			fd.deleteStatus = &dynamo.DeleteDesireStatus{}
+			// Simulate all DeleteDesires confirmed (Successful=True) so finalizer is removed.
+			fd.deleteStatus = &dynamo.DeleteDesireStatus{
+				Conditions: []metav1.Condition{{
+					Type:   dynamo.DesireConditionSuccessful,
+					Status: metav1.ConditionTrue,
+					Reason: "NoErrors",
+				}},
+			}
 
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Namespace: testNS, Name: manifestName},

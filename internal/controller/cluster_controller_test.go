@@ -207,18 +207,42 @@ var _ = Describe("Cluster Controller", func() {
 			var p hyperfleetv1alpha1.Placement
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: clusterName + "-placement"}, &p)).To(Succeed())
 
-			// Simulate kube-applier-aws confirming both deletions.
-			fd.deleteStatus = &dynamo.DeleteDesireStatus{}
+			// Simulate kube-applier-aws acknowledging the delete but resource
+			// still terminating (Successful=False, WaitingForDeletion).
+			fd.deleteStatus = &dynamo.DeleteDesireStatus{
+				Conditions: []metav1.Condition{{
+					Type:   dynamo.DesireConditionSuccessful,
+					Status: metav1.ConditionFalse,
+					Reason: "WaitingForDeletion",
+				}},
+			}
 
-			// Second deletion reconcile: HostedCluster confirmed → writes namespace
+			// Second deletion reconcile: status exists but Successful!=True → requeues.
+			result, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: clusterName},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fd.deleteCount).To(Equal(2)) // HC rewritten
+			Expect(result.RequeueAfter).NotTo(BeZero(), "should requeue while resource still terminating")
+
+			// Simulate resource fully deleted (Successful=True, NoErrors).
+			fd.deleteStatus = &dynamo.DeleteDesireStatus{
+				Conditions: []metav1.Condition{{
+					Type:   dynamo.DesireConditionSuccessful,
+					Status: metav1.ConditionTrue,
+					Reason: "NoErrors",
+				}},
+			}
+
+			// Third deletion reconcile: HC confirmed gone → writes namespace
 			// DeleteDesire → namespace confirmed → deletes Placement, removes finalizer.
 			_, err = reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Namespace: testNS, Name: clusterName},
 			})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(fd.deleteCount).To(Equal(3)) // HC (rewritten) + NS
-			Expect(fd.deletes[1].Spec.TargetItem.Resource).To(Equal("hostedclusters"))
-			Expect(fd.deletes[2].Spec.TargetItem.Resource).To(Equal("namespaces"))
+			Expect(fd.deleteCount).To(Equal(4)) // HC (rewritten) + NS
+			Expect(fd.deletes[2].Spec.TargetItem.Resource).To(Equal("hostedclusters"))
+			Expect(fd.deletes[3].Spec.TargetItem.Resource).To(Equal("namespaces"))
 
 			// Verify the Placement was deleted.
 			err = k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: clusterName + "-placement"}, &p)
@@ -226,9 +250,9 @@ var _ = Describe("Cluster Controller", func() {
 
 			// Verify ApplyDesire specs were cleaned up before DeleteDesires,
 			// and the ReadDesire spec was cleaned up after confirmation.
-			// 7 ApplyDesire cleanups per reconcile pass (idempotent), 1 ReadDesire cleanup.
+			// 7 ApplyDesire cleanups per reconcile pass (3 passes: initial, waiting, final), 1 ReadDesire cleanup.
 			applyCleanups, readCleanups := fd.countSpecCleanups()
-			Expect(applyCleanups).To(Equal(14), "should clean up 7 ApplyDesire specs on each reconcile pass")
+			Expect(applyCleanups).To(Equal(21), "should clean up 7 ApplyDesire specs on each of 3 reconcile passes")
 			Expect(readCleanups).To(Equal(1), "should clean up ReadDesire spec")
 		})
 

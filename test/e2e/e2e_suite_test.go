@@ -14,6 +14,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	dynamodbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	. "github.com/onsi/ginkgo/v2"
@@ -190,12 +191,24 @@ var _ = BeforeSuite(func() {
 		Expect(mgr.Start(ctx)).To(Succeed())
 	}()
 
-	// Simulate kube-applier-aws: poll specs-deletedesires and mirror entries
-	// to status-deletedesires so controllers see deletion confirmations.
+	// Simulate kube-applier-aws: poll specs-deletedesires and write status
+	// entries with Successful=True so controllers see deletion confirmations.
 	go func() {
 		defer GinkgoRecover()
 		specsTable := mc + "-specs-deletedesires"
 		statusTable := mc + "-status-deletedesires"
+
+		completeStatus := dynamo.DeleteDesireStatus{
+			Conditions: []metav1.Condition{{
+				Type:               dynamo.DesireConditionSuccessful,
+				Status:             metav1.ConditionTrue,
+				Reason:             "NoErrors",
+				LastTransitionTime: metav1.Now(),
+			}},
+		}
+		statusAttrs, err := attributevalue.MarshalMap(completeStatus)
+		Expect(err).NotTo(HaveOccurred())
+
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
 		for {
@@ -214,11 +227,13 @@ var _ = BeforeSuite(func() {
 					if !ok {
 						continue
 					}
+					statusItem := map[string]dynamodbtypes.AttributeValue{
+						"documentID": docID,
+						"status":     &dynamodbtypes.AttributeValueMemberM{Value: statusAttrs},
+					}
 					_, _ = dynamoDBCli.PutItem(ctx, &dynamodb.PutItemInput{
-						TableName: aws.String(statusTable),
-						Item: map[string]dynamodbtypes.AttributeValue{
-							"documentID": docID,
-						},
+						TableName:           aws.String(statusTable),
+						Item:                statusItem,
 						ConditionExpression: aws.String("attribute_not_exists(documentID)"),
 					})
 				}
