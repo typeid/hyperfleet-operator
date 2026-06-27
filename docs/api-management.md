@@ -88,13 +88,17 @@ Controls whether customers can set or change a field.
 type ClusterSpec struct {
     // Customer sets on create, cannot change afterward
     // +hyperfleet:write-mode=immutable
-    Region string `json:"region"`
+    Name string `json:"name"`
 
     // Customer can change anytime
     // +hyperfleet:write-mode=mutable
     DeleteProtection *DeleteProtection `json:"deleteProtection,omitempty"`
 
-    // Platform sets this, customer cannot
+    // Platform sets this based on the regional endpoint
+    // +hyperfleet:write-mode=service-set
+    Region string `json:"region"`
+
+    // Platform sets this, customer cannot see it
     // +k8s:openapi-gen=false
     // +hyperfleet:write-mode=service-set
     CreatorARN string `json:"creatorARN,omitempty"`
@@ -189,7 +193,7 @@ The marker scanner produces a **field metadata registry**: generated Go code map
 // Generated from markers. Platform API imports this.
 var FieldRegistry = map[string]FieldMeta{
     "spec.name":                  {WriteMode: Immutable},
-    "spec.region":                {WriteMode: Immutable},
+    "spec.region":                {WriteMode: ServiceSet},
     "spec.deleteProtection":      {WriteMode: Mutable},
     "spec.accountId":             {WriteMode: ServiceSet},
     "spec.hostedCluster.release": {WriteMode: Immutable},
@@ -211,7 +215,7 @@ for fieldPath, value := range req.Fields() {
         // 400: field 'accountId' cannot be set by customers
     }
     if meta.WriteMode == Immutable && req.IsUpdate() && value != current.Get(fieldPath) {
-        // 400: field 'region' is immutable
+        // 400: field 'name' is immutable
     }
 }
 ```
@@ -255,7 +259,6 @@ func ProjectCluster(cr *v1alpha1.Cluster) *api.Cluster {
 func UnprojectCluster(req *api.ClusterSpec, enrichment ServiceSetFields) *v1alpha1.ClusterSpec {
     return &v1alpha1.ClusterSpec{
         Name:             req.Name,
-        Region:           req.Region,
         DeleteProtection: req.DeleteProtection,
         HostedCluster: v1alpha1.HostedClusterPassthrough{
             Release:  req.HostedCluster.Release,
@@ -263,6 +266,7 @@ func UnprojectCluster(req *api.ClusterSpec, enrichment ServiceSetFields) *v1alph
             Etcd:     req.HostedCluster.Etcd,
         },
         // Service-set fields filled in by the platform, not from the request
+        Region:     enrichment.Region,
         AccountID:  enrichment.AccountID,
         CreatorARN: enrichment.CreatorARN,
     }
