@@ -135,7 +135,22 @@ var HyperFleetFeatureGates = map[string]FeatureGateInfo{
 }
 ```
 
-Promoting a gate (e.g., TechPreview → GA) is a one-line change followed by regeneration. The Platform API enforces gates on writes: if a customer sets a gated field they are not entitled to, it returns `400` naming the required gate. Gated fields appear in the OpenAPI schema for all customers (gates are enforced on writes, not reads).
+Promoting a gate (e.g., TechPreview → GA) is a one-line change followed by regeneration. Gated fields appear in the OpenAPI schema for all customers (gates are enforced on writes, not reads).
+
+The Platform API resolves a customer's effective gates from two sources:
+
+1. **Feature set assignment**: each account is assigned a feature set (Default, TechPreviewNoUpgrade, DevPreviewNoUpgrade). The hierarchy is inclusive: TechPreview grants all Default gates, DevPreview grants all TechPreview gates.
+2. **Per-account entitlements**: an entitlement service can enable individual gates for specific accounts, independent of their feature set.
+
+```go
+func customerHasGate(customer Customer, gate string) bool {
+    info := HyperFleetFeatureGates[gate]
+    if info.Stage <= customer.FeatureSet {
+        return true
+    }
+    return entitlements.HasGate(customer.AccountID, gate)
+}
+```
 
 ### Generation Pipeline
 
