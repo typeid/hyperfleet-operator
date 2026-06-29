@@ -26,13 +26,13 @@ var _ = Describe("Cluster lifecycle", func() {
 	AfterEach(func() {
 		np := &hyperfleetv1alpha1.NodePool{}
 		if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: "e2e-nodepool"}, np); err == nil {
-			controllerutil.RemoveFinalizer(np, "hyperfleet.io/operator")
+			controllerutil.RemoveFinalizer(np, "hyperfleet.io/nodepool")
 			_ = k8sClient.Update(ctx, np)
 			_ = k8sClient.Delete(ctx, np)
 		}
 		cluster := &hyperfleetv1alpha1.Cluster{}
 		if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: clusterName}, cluster); err == nil {
-			controllerutil.RemoveFinalizer(cluster, "hyperfleet.io/operator")
+			controllerutil.RemoveFinalizer(cluster, "hyperfleet.io/cluster")
 			_ = k8sClient.Update(ctx, cluster)
 			_ = k8sClient.Delete(ctx, cluster)
 		}

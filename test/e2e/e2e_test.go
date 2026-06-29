@@ -59,7 +59,7 @@ var _ = Describe("Cross-component interaction", func() {
 
 		c := &hyperfleetv1alpha1.Cluster{}
 		if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: "e2e-sep-test"}, c); err == nil {
-			controllerutil.RemoveFinalizer(c, "hyperfleet.io/operator")
+			controllerutil.RemoveFinalizer(c, "hyperfleet.io/cluster")
 			_ = k8sClient.Update(ctx, c)
 			_ = k8sClient.Delete(ctx, c)
 		}
