@@ -363,6 +363,13 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              lastSpecWriteTime:
+                description: |-
+                  LastSpecWriteTime records when desires were last written to DynamoDB.
+                  Used to detect stale status feedback from kube-applier that predates
+                  the current spec revision.
+                format: date-time
+                type: string
               observedGeneration:
                 description: ObservedGeneration is the most recent generation observed
                   by the controller.

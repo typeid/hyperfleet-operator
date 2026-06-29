@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -16,9 +17,10 @@ const ConditionSynced = "Synced"
 
 // DesireStatusEntry identifies a single desire to check.
 type DesireStatusEntry struct {
-	DocID    string
-	Resource string
-	Name     string
+	DocID         string
+	Resource      string
+	Name          string
+	SpecWriteTime time.Time
 }
 
 // CheckApplyDesireStatuses queries GetApplyDesireStatus for each entry and
@@ -41,6 +43,12 @@ func CheckApplyDesireStatuses(
 			if !errors.Is(err, dynamo.ErrNotFound) {
 				failedMessages = append(failedMessages, fmt.Sprintf("%s/%s: %v", e.Resource, e.Name, err))
 			}
+			continue
+		}
+
+		// Skip statuses that predate the current spec write — kube-applier
+		// hasn't processed the latest spec revision yet.
+		if !e.SpecWriteTime.IsZero() && status.ObservedDesireUpdateTime.Before(e.SpecWriteTime) {
 			continue
 		}
 

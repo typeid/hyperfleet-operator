@@ -99,6 +99,12 @@ type NodePoolStatus struct {
 	// ObservedGeneration is the most recent generation observed by the controller.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// LastSpecWriteTime records when desires were last written to DynamoDB.
+	// Used to detect stale status feedback from kube-applier that predates
+	// the current spec revision.
+	// +optional
+	LastSpecWriteTime *metav1.Time `json:"lastSpecWriteTime,omitempty"`
 }
 
 // +kubebuilder:object:root=true

@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/typeid/hyperfleet-operator/internal/dynamo"
 )
@@ -43,6 +44,10 @@ type fakeDynamo struct {
 	deleteStatus *dynamo.DeleteDesireStatus
 	// deletedSpecs tracks calls to DeleteDesireSpec (suffix/docID).
 	deletedSpecs []string
+	// lastPutTime records when the last PutApplyDesire was called, mirroring
+	// the real DynamoDB updateTime that kube-applier copies into
+	// ObservedDesireUpdateTime.
+	lastPutTime time.Time
 	// Set applyErr to make PutApplyDesire return an error.
 	applyErr error
 	// Set deleteErr to make PutDeleteDesire return an error.
@@ -59,6 +64,7 @@ func (f *fakeDynamo) PutApplyDesire(_ context.Context, _ string, desire *dynamo.
 	}
 	f.applyCount++
 	f.applies = append(f.applies, desire)
+	f.lastPutTime = time.Now().UTC()
 	return nil
 }
 
@@ -85,7 +91,11 @@ func (f *fakeDynamo) GetApplyDesireStatus(_ context.Context, _, _ string) (*dyna
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.applyStatus != nil {
-		return f.applyStatus, nil
+		s := *f.applyStatus
+		if s.ObservedDesireUpdateTime.IsZero() && !f.lastPutTime.IsZero() {
+			s.ObservedDesireUpdateTime = f.lastPutTime
+		}
+		return &s, nil
 	}
 	return nil, fmt.Errorf("%w: fake", dynamo.ErrNotFound)
 }

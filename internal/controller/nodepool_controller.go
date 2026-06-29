@@ -19,7 +19,6 @@ package controller
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"time"
 
@@ -101,13 +100,19 @@ func (r *NodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	docID := dynamo.NewDocumentID(taskKey, m.Group, m.Version, m.Resource, ns, m.Name)
 	readDocID := dynamo.NewDocumentID(taskKey+"-read", m.Group, m.Version, m.Resource, ns, m.Name)
-	applyEntry := DesireStatusEntry{DocID: docID, Resource: m.Resource, Name: m.Name}
 
 	// Skip full reconcile when spec hasn't changed (status-only update).
 	if nodePool.Generation == nodePool.Status.ObservedGeneration {
+		var specWriteTime time.Time
+		if nodePool.Status.LastSpecWriteTime != nil {
+			specWriteTime = nodePool.Status.LastSpecWriteTime.Time
+		}
+		applyEntry := DesireStatusEntry{DocID: docID, Resource: m.Resource, Name: m.Name, SpecWriteTime: specWriteTime}
 		r.updateStatusFromDynamo(ctx, &nodePool, statusPrefix, applyEntry, readDocID)
 		return ctrl.Result{RequeueAfter: statusRefreshDelay}, nil
 	}
+
+	specWriteTime := time.Now().UTC()
 
 	content, err := json.Marshal(m.Object)
 	if err != nil {
@@ -153,6 +158,7 @@ func (r *NodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	// Read status feedback from DynamoDB.
+	applyEntry := DesireStatusEntry{DocID: docID, Resource: m.Resource, Name: m.Name, SpecWriteTime: specWriteTime}
 	r.updateStatusFromDynamo(ctx, &nodePool, statusPrefix, applyEntry, readDocID)
 
 	// Re-read to see phase set by updateStatusFromDynamo.
@@ -278,15 +284,6 @@ func (r *NodePoolReconciler) updateStatusFromDynamo(ctx context.Context, nodePoo
 			return err
 		}
 		meta.SetStatusCondition(&latest.Status.Conditions, syncedCond)
-		if readErr != nil && !errors.Is(readErr, dynamo.ErrNotFound) {
-			meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
-				Type:               "Available",
-				Status:             metav1.ConditionUnknown,
-				Reason:             "StatusFeedbackFailed",
-				Message:            fmt.Sprintf("Failed to read status from DynamoDB: %v", readErr),
-				ObservedGeneration: latest.Generation,
-			})
-		}
 		for _, cond := range npConditions {
 			if cond.Type == "Ready" {
 				meta.SetStatusCondition(&latest.Status.Conditions, cond)
@@ -294,6 +291,10 @@ func (r *NodePoolReconciler) updateStatusFromDynamo(ctx context.Context, nodePoo
 		}
 		if meta.IsStatusConditionTrue(latest.Status.Conditions, "Ready") {
 			latest.Status.Phase = hyperfleetv1alpha1.NodePoolPhaseReady
+		}
+		if !applyEntry.SpecWriteTime.IsZero() {
+			t := metav1.NewTime(applyEntry.SpecWriteTime)
+			latest.Status.LastSpecWriteTime = &t
 		}
 		latest.Status.ObservedGeneration = latest.Generation
 		return r.Status().Update(ctx, &latest)

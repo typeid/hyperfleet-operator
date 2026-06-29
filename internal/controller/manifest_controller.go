@@ -93,6 +93,15 @@ func (r *ManifestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	// Build set of current resource document IDs to detect orphans,
 	// and entries for Synced condition checking.
+	// Only capture a fresh specWriteTime when the spec has actually changed.
+	// On re-reconciles (Generation == ObservedGeneration) reload the persisted
+	// value so the wrong-generation check still works.
+	var specWriteTime time.Time
+	if hfm.Generation != hfm.Status.ObservedGeneration {
+		specWriteTime = time.Now().UTC()
+	} else if hfm.Status.LastSpecWriteTime != nil {
+		specWriteTime = hfm.Status.LastSpecWriteTime.Time
+	}
 	currentDocIDs := make(map[string]struct{}, len(hfm.Spec.Resources))
 	var applyEntries []DesireStatusEntry
 
@@ -104,7 +113,7 @@ func (r *ManifestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 		docID := dynamo.NewDocumentID(scopedTaskKey, group, version, res.Resource, namespace, name)
 		currentDocIDs[docID] = struct{}{}
-		applyEntries = append(applyEntries, DesireStatusEntry{DocID: docID, Resource: res.Resource, Name: name})
+		applyEntries = append(applyEntries, DesireStatusEntry{DocID: docID, Resource: res.Resource, Name: name, SpecWriteTime: specWriteTime})
 
 		desire := &dynamo.ApplyDesire{
 			DynamoDBMetadata: dynamo.DynamoDBMetadata{DocumentID: docID},
@@ -187,6 +196,10 @@ func (r *ManifestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			latest.Status.Phase = hyperfleetv1alpha1.ManifestPhaseSyncing
 		}
 		latest.Status.AppliedResources = int32(len(hfm.Spec.Resources))
+		if !specWriteTime.IsZero() {
+			t := metav1.NewTime(specWriteTime)
+			latest.Status.LastSpecWriteTime = &t
+		}
 		latest.Status.ObservedGeneration = latest.Generation
 		return r.Status().Update(ctx, &latest)
 	}); err != nil {

@@ -104,23 +104,40 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	specsPrefix := dynamo.SpecsPrefix(mc)
 	statusPrefix := dynamo.StatusPrefix(mc)
 
-	// Skip full reconcile when spec hasn't changed (status-only update).
-	if cluster.Generation == cluster.Status.ObservedGeneration {
-		r.updateStatusFromDynamo(ctx, &cluster, statusPrefix,
-			dynamo.NewDocumentID(taskKey+"-read", "hypershift.openshift.io", "v1beta1", "hostedclusters",
-				fmt.Sprintf("clusters-%s", cluster.Name), cluster.Spec.Name))
-		return ctrl.Result{RequeueAfter: statusRefreshDelay}, nil
-	}
-
-	// Generate the 7 cluster resources and create ApplyDesires.
+	// Render resources and build common structures used by both paths.
 	resources, err := render.ClusterResources(&cluster, r.RegionalConfig)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("render cluster resources: %w", err)
 	}
-	for _, m := range resources {
-		ns := m.Namespace
 
-		docID := dynamo.NewDocumentID(taskKey, m.Group, m.Version, m.Resource, ns, m.Name)
+	hcName := cluster.Spec.Name
+	hcNs := fmt.Sprintf("clusters-%s", cluster.Name)
+	readDocID := dynamo.NewDocumentID(taskKey+"-read", "hypershift.openshift.io", "v1beta1", "hostedclusters", hcNs, hcName)
+
+	// Determine specWriteTime: fresh on spec change, persisted on status-only refresh.
+	var specWriteTime time.Time
+	specChanged := cluster.Generation != cluster.Status.ObservedGeneration
+	if specChanged {
+		specWriteTime = time.Now().UTC()
+	} else if cluster.Status.LastSpecWriteTime != nil {
+		specWriteTime = cluster.Status.LastSpecWriteTime.Time
+	}
+
+	var applyEntries []DesireStatusEntry
+	for _, m := range resources {
+		docID := dynamo.NewDocumentID(taskKey, m.Group, m.Version, m.Resource, m.Namespace, m.Name)
+		applyEntries = append(applyEntries, DesireStatusEntry{DocID: docID, Resource: m.Resource, Name: m.Name, SpecWriteTime: specWriteTime})
+	}
+
+	// Skip full reconcile when spec hasn't changed (status-only update).
+	if !specChanged {
+		r.updateStatusFromDynamo(ctx, &cluster, statusPrefix, readDocID, applyEntries)
+		return ctrl.Result{RequeueAfter: statusRefreshDelay}, nil
+	}
+
+	// Write ApplyDesires.
+	for _, m := range resources {
+		docID := dynamo.NewDocumentID(taskKey, m.Group, m.Version, m.Resource, m.Namespace, m.Name)
 		content, err := json.Marshal(m.Object)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("marshal resource %s: %w", m.Name, err)
@@ -135,7 +152,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 					Group:     m.Group,
 					Version:   m.Version,
 					Resource:  m.Resource,
-					Namespace: ns,
+					Namespace: m.Namespace,
 					Name:      m.Name,
 				},
 				KubeContent: content,
@@ -146,33 +163,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 	}
 
-	// Build entries for Synced condition checking.
-	var applyEntries []DesireStatusEntry
-	for _, m := range resources {
-		docID := dynamo.NewDocumentID(taskKey, m.Group, m.Version, m.Resource, m.Namespace, m.Name)
-		applyEntries = append(applyEntries, DesireStatusEntry{DocID: docID, Resource: m.Resource, Name: m.Name})
-	}
-
-	// Set Synced condition based on apply desire statuses.
-	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		var latest hyperfleetv1alpha1.Cluster
-		if err := r.Get(ctx, client.ObjectKeyFromObject(&cluster), &latest); err != nil {
-			if apierrors.IsNotFound(err) {
-				return nil
-			}
-			return err
-		}
-		syncedCond := CheckApplyDesireStatuses(ctx, r.Dynamo, statusPrefix, applyEntries, latest.Generation)
-		meta.SetStatusCondition(&latest.Status.Conditions, syncedCond)
-		return r.Status().Update(ctx, &latest)
-	}); err != nil {
-		return ctrl.Result{}, fmt.Errorf("set Synced condition: %w", err)
-	}
-
-	// Create ReadDesire for HostedCluster status feedback.
-	hcName := cluster.Spec.Name
-	hcNs := fmt.Sprintf("clusters-%s", cluster.Name)
-	readDocID := dynamo.NewDocumentID(taskKey+"-read", "hypershift.openshift.io", "v1beta1", "hostedclusters", hcNs, hcName)
+	// Write ReadDesire for HostedCluster status feedback.
 	readDesire := &dynamo.ReadDesire{
 		DynamoDBMetadata: dynamo.DynamoDBMetadata{DocumentID: readDocID},
 		Spec: dynamo.ReadDesireSpec{
@@ -192,7 +183,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	// Read status feedback from DynamoDB and update Cluster status.
-	r.updateStatusFromDynamo(ctx, &cluster, statusPrefix, readDocID)
+	r.updateStatusFromDynamo(ctx, &cluster, statusPrefix, readDocID, applyEntries)
 
 	// Set phase to Provisioning if not yet available.
 	if cluster.Status.Phase == "" || cluster.Status.Phase == hyperfleetv1alpha1.ClusterPhaseWaitingForPlacement {
@@ -288,14 +279,8 @@ func (r *ClusterReconciler) reconcileDelete(ctx context.Context, cluster *hyperf
 			return ctrl.Result{}, fmt.Errorf("delete hostedcluster: %w", err)
 		}
 
-		// Wait for both HostedCluster deletion and NodePool cleanup to complete.
-		if !hcResult.IsZero() || pendingNodePools > 0 {
-			if pendingNodePools > 0 {
-				log.Info("Waiting for NodePools to be deleted", "count", pendingNodePools)
-			}
-			if !hcResult.IsZero() {
-				log.Info("Waiting for HostedCluster deletion", "hostedCluster", hcName)
-			}
+		if !hcResult.IsZero() {
+			log.Info("Waiting for HostedCluster deletion", "hostedCluster", hcName)
 			r.setSyncedCondition(ctx, cluster, CheckDeleteDesireStatuses(ctx, r.Dynamo, statusPrefix, deleteEntries, cluster.Generation))
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
@@ -315,13 +300,15 @@ func (r *ClusterReconciler) reconcileDelete(ctx context.Context, cluster *hyperf
 		if err := r.Dynamo.DeleteDesireSpec(ctx, specsPrefix, "-readdesires", readDocID); err != nil {
 			log.Error(err, "failed to clean up ReadDesire spec", "hostedcluster", hcName)
 		}
-	} else if pendingNodePools > 0 {
+	}
+
+	// Wait for all NodePool CRs to be fully deleted, regardless of MC resolution.
+	if pendingNodePools > 0 {
 		log.Info("Waiting for NodePools to be deleted", "count", pendingNodePools)
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
-	// Step 3: Delete the Placement explicitly rather than relying on OwnerReference GC.
-	// GC ordering is non-deterministic and envtest doesn't run GC at all; OwnerReference is a safety net.
+	// Step 3: Delete the Placement
 	placementName := fmt.Sprintf("%s-placement", cluster.Name)
 	var placement hyperfleetv1alpha1.Placement
 	if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: placementName}, &placement); err == nil {
@@ -371,19 +358,8 @@ func (r *ClusterReconciler) writeAndWaitDeleteDesire(ctx context.Context, specsP
 	return ctrl.Result{}, nil
 }
 
-func (r *ClusterReconciler) updateStatusFromDynamo(ctx context.Context, cluster *hyperfleetv1alpha1.Cluster, statusPrefix, readDocID string) {
+func (r *ClusterReconciler) updateStatusFromDynamo(ctx context.Context, cluster *hyperfleetv1alpha1.Cluster, statusPrefix, readDocID string, applyEntries []DesireStatusEntry) {
 	log := logf.FromContext(ctx)
-
-	// Rebuild apply entries for Synced condition refresh.
-	resources, err := render.ClusterResources(cluster, r.RegionalConfig)
-	if err != nil {
-		log.Error(err, "Failed to render cluster resources for status check")
-	}
-	var applyEntries []DesireStatusEntry
-	for _, m := range resources {
-		docID := dynamo.NewDocumentID(taskKey, m.Group, m.Version, m.Resource, m.Namespace, m.Name)
-		applyEntries = append(applyEntries, DesireStatusEntry{DocID: docID, Resource: m.Resource, Name: m.Name})
-	}
 
 	readStatus, readErr := r.Dynamo.GetReadDesireStatus(ctx, statusPrefix, readDocID)
 	if readErr != nil {
@@ -422,16 +398,7 @@ func (r *ClusterReconciler) updateStatusFromDynamo(ctx context.Context, cluster 
 			meta.SetStatusCondition(&latest.Status.Conditions, syncedCond)
 		}
 
-		// Surface ReadDesire failures as Available=Unknown.
-		if readErr != nil {
-			meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
-				Type:               "Available",
-				Status:             metav1.ConditionUnknown,
-				Reason:             "StatusFeedbackFailed",
-				Message:            fmt.Sprintf("ReadDesire for hostedclusters/%s: %v", cluster.Spec.Name, readErr),
-				ObservedGeneration: latest.Generation,
-			})
-		} else if readStatus != nil && readStatus.KubeContent != nil {
+		if readStatus != nil && readStatus.KubeContent != nil {
 			for _, cond := range hc.Status.Conditions {
 				if cond.Type == "Available" || cond.Type == "Degraded" {
 					meta.SetStatusCondition(&latest.Status.Conditions, cond)
@@ -448,6 +415,10 @@ func (r *ClusterReconciler) updateStatusFromDynamo(ctx context.Context, cluster 
 		if meta.IsStatusConditionTrue(latest.Status.Conditions, "Available") &&
 			!meta.IsStatusConditionTrue(latest.Status.Conditions, "Degraded") {
 			latest.Status.Phase = hyperfleetv1alpha1.ClusterPhaseReady
+		}
+		if len(applyEntries) > 0 && !applyEntries[0].SpecWriteTime.IsZero() {
+			t := metav1.NewTime(applyEntries[0].SpecWriteTime)
+			latest.Status.LastSpecWriteTime = &t
 		}
 		latest.Status.ObservedGeneration = latest.Generation
 		return r.Status().Update(ctx, &latest)

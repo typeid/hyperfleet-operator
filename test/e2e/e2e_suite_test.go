@@ -198,17 +198,6 @@ var _ = BeforeSuite(func() {
 		specsTable := mc + "-specs-applydesires"
 		statusTable := mc + "-status-applydesires"
 
-		completeStatus := dynamo.ApplyDesireStatus{
-			Conditions: []metav1.Condition{{
-				Type:               dynamo.DesireConditionSuccessful,
-				Status:             metav1.ConditionTrue,
-				Reason:             "NoErrors",
-				LastTransitionTime: metav1.Now(),
-			}},
-		}
-		statusAttrs, err := attributevalue.MarshalMap(completeStatus)
-		Expect(err).NotTo(HaveOccurred())
-
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
 		for {
@@ -225,6 +214,28 @@ var _ = BeforeSuite(func() {
 				for _, item := range out.Items {
 					docID, ok := item["documentID"]
 					if !ok {
+						continue
+					}
+					// Mirror real kube-applier: copy the spec's updateTime
+					// into ObservedDesireUpdateTime so the wrong-generation
+					// check sees the status as current.
+					var observedTime time.Time
+					if ut, ok := item["updateTime"]; ok {
+						if sv, ok := ut.(*dynamodbtypes.AttributeValueMemberS); ok {
+							observedTime, _ = time.Parse(time.RFC3339, sv.Value)
+						}
+					}
+					completeStatus := dynamo.ApplyDesireStatus{
+						ObservedDesireUpdateTime: observedTime,
+						Conditions: []metav1.Condition{{
+							Type:               dynamo.DesireConditionSuccessful,
+							Status:             metav1.ConditionTrue,
+							Reason:             "NoErrors",
+							LastTransitionTime: metav1.Now(),
+						}},
+					}
+					statusAttrs, err := attributevalue.MarshalMap(completeStatus)
+					if err != nil {
 						continue
 					}
 					statusItem := map[string]dynamodbtypes.AttributeValue{
