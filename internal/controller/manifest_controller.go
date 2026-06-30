@@ -339,6 +339,17 @@ func (r *ManifestReconciler) cleanupOrphanedDesires(ctx context.Context, hfm *hy
 		} else {
 			log.Info("Cleaned up orphaned ApplyDesire", "resource", rs.Resource, "name", rs.Name)
 		}
+		// ResourceStatuses only contains previously-watched resources, so
+		// each orphan also has a ReadDesire that needs cleanup.
+		readDocID := dynamo.NewDocumentID(scopedTaskKey+"-read", rs.Group, rs.Version, rs.Resource, rs.Namespace, rs.Name)
+		if r.EventRouter != nil {
+			r.EventRouter.Deregister(readDocID)
+		}
+		if err := r.Dynamo.DeleteDesireSpec(ctx, specsPrefix, "-readdesires", readDocID); err != nil {
+			if !errors.Is(err, dynamo.ErrNotFound) {
+				log.Error(err, "failed to clean up orphaned ReadDesire", "resource", rs.Resource, "name", rs.Name)
+			}
+		}
 	}
 }
 
