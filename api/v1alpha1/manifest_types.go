@@ -74,6 +74,12 @@ type ResourceStatus struct {
 	// Namespace is metadata.namespace (empty for cluster-scoped resources).
 	// +optional
 	Namespace string `json:"namespace,omitempty"`
+	// Group is the API group (e.g. "batch", "" for core).
+	// +optional
+	Group string `json:"group,omitempty"`
+	// Version is the API version (e.g. "v1").
+	// +optional
+	Version string `json:"version,omitempty"`
 	// Status is the .status sub-object of the live resource mirrored from the MC.
 	// Only the status is stored to avoid duplicating the full spec in etcd.
 	// +optional

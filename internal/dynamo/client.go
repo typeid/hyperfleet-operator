@@ -21,8 +21,9 @@ const (
 	TableSuffixApplyDesires       = "-applydesires"
 	TableSuffixDeleteDesires      = "-deletedesires"
 	TableSuffixReadDesires        = "-readdesires"
-	TableSuffixStatusApplyDesires = "-status-applydesires"
-	TableSuffixStatusReadDesires  = "-status-readdesires"
+	TableSuffixStatusApplyDesires  = "-status-applydesires"
+	TableSuffixStatusDeleteDesires = "-status-deletedesires"
+	TableSuffixStatusReadDesires   = "-status-readdesires"
 	attributeDocumentID           = "documentID"
 )
 
@@ -131,7 +132,6 @@ func (c *Client) upsertDesire(ctx context.Context, table, documentID string, spe
 
 	existing, err := c.db.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName:            aws.String(table),
-		ConsistentRead:       aws.Bool(true),
 		ProjectionExpression: aws.String("specHash, updateTime"),
 		Key: map[string]dynamodbtypes.AttributeValue{
 			attributeDocumentID: &dynamodbtypes.AttributeValueMemberS{Value: documentID},

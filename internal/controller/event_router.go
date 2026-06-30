@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"log/slog"
 	"sync"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -45,19 +46,25 @@ func (r *EventRouter) Lookup(docID string) (EventTarget, bool) {
 }
 
 // Dispatch sends a GenericEvent to the target registered for docID.
-// Returns false if no target is registered.
+// Returns false if no target is registered. Uses a non-blocking send
+// to avoid stalling the stream watcher goroutine when the channel is full.
 func (r *EventRouter) Dispatch(docID string) bool {
 	target, ok := r.Lookup(docID)
 	if !ok {
 		return false
 	}
-	target.Channel <- event.GenericEvent{
+	evt := event.GenericEvent{
 		Object: &metav1.PartialObjectMetadata{
 			ObjectMeta: metav1.ObjectMeta{
 				Namespace: target.Key.Namespace,
 				Name:      target.Key.Name,
 			},
 		},
+	}
+	select {
+	case target.Channel <- evt:
+	default:
+		slog.Warn("EventRouter: channel full, dropping event", "docID", docID, "key", target.Key.String())
 	}
 	return true
 }

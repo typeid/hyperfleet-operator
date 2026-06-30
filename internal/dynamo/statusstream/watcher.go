@@ -166,7 +166,7 @@ func (w *Watcher) getShardIterators(ctx context.Context, streamARN string) ([]st
 			iterOut, err := w.streamsClient.GetShardIterator(ctx, &dynamodbstreams.GetShardIteratorInput{
 				StreamArn:         aws.String(streamARN),
 				ShardId:           shard.ShardId,
-				ShardIteratorType: streamtypes.ShardIteratorTypeTrimHorizon,
+				ShardIteratorType: streamtypes.ShardIteratorTypeLatest,
 			})
 			if err != nil {
 				continue

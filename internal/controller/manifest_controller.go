@@ -215,6 +215,7 @@ func (r *ManifestReconciler) reconcileDelete(ctx context.Context, hfm *hyperflee
 	}
 
 	log.Info("Manifest deleting", "manifest", hfm.Name)
+	r.setPhase(ctx, hfm, hyperfleetv1alpha1.ManifestPhaseDeleting)
 
 	mc := hfm.Spec.ManagementCluster
 	specsPrefix := dynamo.SpecsPrefix(mc)
@@ -327,7 +328,7 @@ func (r *ManifestReconciler) cleanupOrphanedDesires(ctx context.Context, hfm *hy
 	// ResourceStatuses tracks what was previously applied — any entry whose
 	// docID is absent from currentDocIDs is an orphan.
 	for _, rs := range hfm.Status.ResourceStatuses {
-		docID := dynamo.NewDocumentID(scopedTaskKey, "", "", rs.Resource, rs.Namespace, rs.Name)
+		docID := dynamo.NewDocumentID(scopedTaskKey, rs.Group, rs.Version, rs.Resource, rs.Namespace, rs.Name)
 		if _, ok := currentDocIDs[docID]; ok {
 			continue
 		}
@@ -373,6 +374,8 @@ func (r *ManifestReconciler) updateResourceStatuses(ctx context.Context, hfm *hy
 			Resource:  res.Resource,
 			Name:      name,
 			Namespace: namespace,
+			Group:     group,
+			Version:   version,
 			Status:    runtime.RawExtension{Raw: obj.Status},
 		})
 	}
@@ -406,6 +409,29 @@ func (r *ManifestReconciler) setSyncedCondition(ctx context.Context, hfm *hyperf
 		return r.Status().Update(ctx, &latest)
 	}); err != nil {
 		logf.FromContext(ctx).Error(err, "Failed to update Synced condition")
+	}
+}
+
+func (r *ManifestReconciler) setPhase(ctx context.Context, hfm *hyperfleetv1alpha1.Manifest, phase hyperfleetv1alpha1.ManifestPhase) {
+	if hfm.Status.Phase == phase {
+		return
+	}
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var latest hyperfleetv1alpha1.Manifest
+		if err := r.Get(ctx, client.ObjectKeyFromObject(hfm), &latest); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil
+			}
+			return err
+		}
+		if latest.Status.Phase == phase {
+			return nil
+		}
+		latest.Status.Phase = phase
+		latest.Status.ObservedGeneration = latest.Generation
+		return r.Status().Update(ctx, &latest)
+	}); err != nil {
+		logf.FromContext(ctx).Error(err, "Failed to update manifest phase", "phase", phase)
 	}
 }
 

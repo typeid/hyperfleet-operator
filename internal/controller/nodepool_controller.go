@@ -163,7 +163,9 @@ func (r *NodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	r.updateStatusFromDynamo(ctx, &nodePool, statusPrefix, applyEntry, readDocID)
 
 	// Re-read to see phase set by updateStatusFromDynamo.
-	_ = r.Get(ctx, client.ObjectKeyFromObject(&nodePool), &nodePool)
+	if err := r.Get(ctx, client.ObjectKeyFromObject(&nodePool), &nodePool); err != nil {
+		return ctrl.Result{}, fmt.Errorf("re-read nodepool after status update: %w", client.IgnoreNotFound(err))
+	}
 	if nodePool.Status.Phase == "" || nodePool.Status.Phase == hyperfleetv1alpha1.NodePoolPhaseWaitingForCluster {
 		r.setPhase(ctx, &nodePool, hyperfleetv1alpha1.NodePoolPhaseProvisioning)
 	}

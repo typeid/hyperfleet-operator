@@ -104,13 +104,14 @@ func CheckDeleteDesireStatuses(
 ) metav1.Condition {
 	total := len(entries)
 	deleted := 0
+	var errorMessages []string
 	var pendingMessages []string
 
 	for _, e := range entries {
 		status, err := dc.GetDeleteDesireStatus(ctx, statusPrefix, e.DocID)
 		if err != nil {
 			if !errors.Is(err, dynamo.ErrNotFound) {
-				pendingMessages = append(pendingMessages, fmt.Sprintf("%s/%s: %v", e.Resource, e.Name, err))
+				errorMessages = append(errorMessages, fmt.Sprintf("%s/%s: %v", e.Resource, e.Name, err))
 			}
 			continue
 		}
@@ -128,6 +129,14 @@ func CheckDeleteDesireStatuses(
 	}
 
 	switch {
+	case len(errorMessages) > 0:
+		return metav1.Condition{
+			Type:               ConditionSynced,
+			Status:             metav1.ConditionFalse,
+			Reason:             "StatusCheckFailed",
+			Message:            fmt.Sprintf("%d/%d deleted; errors: %s", deleted, total, strings.Join(errorMessages, "; ")),
+			ObservedGeneration: generation,
+		}
 	case len(pendingMessages) > 0:
 		return metav1.Condition{
 			Type:               ConditionSynced,

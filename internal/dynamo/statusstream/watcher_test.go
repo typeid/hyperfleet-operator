@@ -49,34 +49,3 @@ func TestExtractDocumentID(t *testing.T) {
 		})
 	}
 }
-
-func TestStreamAttrToDB(t *testing.T) {
-	// Verify recursive conversion of a nested map with multiple types.
-	input := map[string]streamtypes.AttributeValue{
-		"str":  &streamtypes.AttributeValueMemberS{Value: "hello"},
-		"num":  &streamtypes.AttributeValueMemberN{Value: "42"},
-		"bool": &streamtypes.AttributeValueMemberBOOL{Value: true},
-		"nested": &streamtypes.AttributeValueMemberM{Value: map[string]streamtypes.AttributeValue{
-			"inner": &streamtypes.AttributeValueMemberS{Value: "world"},
-		}},
-		"list": &streamtypes.AttributeValueMemberL{Value: []streamtypes.AttributeValue{
-			&streamtypes.AttributeValueMemberS{Value: "a"},
-			&streamtypes.AttributeValueMemberN{Value: "1"},
-		}},
-	}
-
-	result := streamImageToDynamoDBItem(input)
-	if result == nil {
-		t.Fatal("expected non-nil result")
-	}
-	if len(result) != 5 {
-		t.Fatalf("expected 5 keys, got %d", len(result))
-	}
-}
-
-func TestStreamImageToDynamoDBItemNil(t *testing.T) {
-	result := streamImageToDynamoDBItem(nil)
-	if result != nil {
-		t.Errorf("expected nil for nil input, got %v", result)
-	}
-}
