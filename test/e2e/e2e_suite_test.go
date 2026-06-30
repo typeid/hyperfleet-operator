@@ -27,6 +27,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
@@ -53,6 +54,7 @@ var (
 	dynamoDBCli *dynamodb.Client
 	dynamoCli   *dynamo.Client
 	ddbPort     string
+	eventRouter *controller.EventRouter
 )
 
 func TestE2E(t *testing.T) {
@@ -164,6 +166,11 @@ var _ = BeforeSuite(func() {
 		MCConfig: mcLoader,
 	}).SetupWithManager(mgr)).To(Succeed())
 
+	eventRouter = controller.NewEventRouter()
+	clusterStatusEvents := make(chan event.GenericEvent, 256)
+	nodePoolStatusEvents := make(chan event.GenericEvent, 256)
+	manifestStatusEvents := make(chan event.GenericEvent, 256)
+
 	Expect((&controller.ClusterReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
@@ -172,18 +179,24 @@ var _ = BeforeSuite(func() {
 			BaseDomain: "e2e.example.com",
 			AWSRegion:  "us-east-1",
 		},
+		StatusEvents: clusterStatusEvents,
+		EventRouter:  eventRouter,
 	}).SetupWithManager(mgr)).To(Succeed())
 
 	Expect((&controller.NodePoolReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Dynamo: dynamoCli,
+		Client:       mgr.GetClient(),
+		Scheme:       mgr.GetScheme(),
+		Dynamo:       dynamoCli,
+		StatusEvents: nodePoolStatusEvents,
+		EventRouter:  eventRouter,
 	}).SetupWithManager(mgr)).To(Succeed())
 
 	Expect((&controller.ManifestReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Dynamo: dynamoCli,
+		Client:       mgr.GetClient(),
+		Scheme:       mgr.GetScheme(),
+		Dynamo:       dynamoCli,
+		StatusEvents: manifestStatusEvents,
+		EventRouter:  eventRouter,
 	}).SetupWithManager(mgr)).To(Succeed())
 
 	go func() {

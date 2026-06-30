@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	hyperfleetv1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
@@ -440,13 +441,16 @@ var _ = Describe("Manifest Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		It("should populate DocIndex for watched resources", func() {
+		It("should populate EventRouter for watched resources", func() {
 			resource := newTestManifest(manifestName)
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 
 			fd := &fakeDynamo{}
+			er := NewEventRouter()
 			reconciler := &ManifestReconciler{
 				Client: k8sClient, Scheme: k8sClient.Scheme(), Dynamo: fd,
+				StatusEvents: make(chan event.GenericEvent, 256),
+				EventRouter:  er,
 			}
 
 			_, _ = reconciler.Reconcile(ctx, reconcile.Request{
@@ -457,29 +461,29 @@ var _ = Describe("Manifest Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// The watched Job should have a DocIndex entry mapping its readDocID
-			// back to the Manifest CR's NamespacedName.
 			readDocID := dynamo.NewDocumentID(
 				"hyperfleet-manifest/"+testNS+"/"+manifestName+"-read",
 				"batch", "v1", "jobs", "zoa-actions", "collect-logs-abc123",
 			)
-			val, ok := reconciler.DocIndex.Load(readDocID)
-			Expect(ok).To(BeTrue(), "DocIndex should contain entry for watched resource")
-			nn := val.(types.NamespacedName)
-			Expect(nn.Namespace).To(Equal(testNS))
-			Expect(nn.Name).To(Equal(manifestName))
+			target, ok := er.Lookup(readDocID)
+			Expect(ok).To(BeTrue(), "EventRouter should contain entry for watched resource")
+			Expect(target.Key.Namespace).To(Equal(testNS))
+			Expect(target.Key.Name).To(Equal(manifestName))
 		})
 
-		It("should clean up DocIndex on deletion", func() {
+		It("should clean up EventRouter on deletion", func() {
 			resource := newTestManifest(manifestName)
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 
 			fd := &fakeDynamo{}
+			er := NewEventRouter()
 			reconciler := &ManifestReconciler{
 				Client: k8sClient, Scheme: k8sClient.Scheme(), Dynamo: fd,
+				StatusEvents: make(chan event.GenericEvent, 256),
+				EventRouter:  er,
 			}
 
-			// Finalizer + desires (populates DocIndex).
+			// Finalizer + desires (populates EventRouter).
 			_, _ = reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Namespace: testNS, Name: manifestName},
 			})
@@ -491,8 +495,8 @@ var _ = Describe("Manifest Controller", func() {
 				"hyperfleet-manifest/"+testNS+"/"+manifestName+"-read",
 				"batch", "v1", "jobs", "zoa-actions", "collect-logs-abc123",
 			)
-			_, ok := reconciler.DocIndex.Load(readDocID)
-			Expect(ok).To(BeTrue(), "DocIndex should be populated before deletion")
+			_, ok := er.Lookup(readDocID)
+			Expect(ok).To(BeTrue(), "EventRouter should be populated before deletion")
 
 			// Delete the CR.
 			var toDelete hyperfleetv1alpha1.Manifest
@@ -513,8 +517,8 @@ var _ = Describe("Manifest Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			_, ok = reconciler.DocIndex.Load(readDocID)
-			Expect(ok).To(BeFalse(), "DocIndex should be cleaned up after deletion")
+			_, ok = er.Lookup(readDocID)
+			Expect(ok).To(BeFalse(), "EventRouter should be cleaned up after deletion")
 		})
 	})
 })

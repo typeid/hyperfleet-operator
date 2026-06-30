@@ -17,10 +17,10 @@ const ConditionSynced = "Synced"
 
 // DesireStatusEntry identifies a single desire to check.
 type DesireStatusEntry struct {
-	DocID         string
-	Resource      string
-	Name          string
-	SpecWriteTime time.Time
+	DocID            string
+	Resource         string
+	Name             string
+	DesireUpdateTime time.Time
 }
 
 // CheckApplyDesireStatuses queries GetApplyDesireStatus for each entry and
@@ -48,7 +48,7 @@ func CheckApplyDesireStatuses(
 
 		// Skip statuses that predate the current spec write — kube-applier
 		// hasn't processed the latest spec revision yet.
-		if !e.SpecWriteTime.IsZero() && status.ObservedDesireUpdateTime.Before(e.SpecWriteTime) {
+		if !e.DesireUpdateTime.IsZero() && status.ObservedDesireUpdateTime.Before(e.DesireUpdateTime) {
 			continue
 		}
 

@@ -28,9 +28,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodbstreams"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -154,19 +152,28 @@ func main() {
 		AWSRegion:  awsRegion,
 	}
 
+	eventRouter := controller.NewEventRouter()
+	clusterStatusEvents := make(chan event.GenericEvent, 256)
+	nodePoolStatusEvents := make(chan event.GenericEvent, 256)
+	manifestStatusEvents := make(chan event.GenericEvent, 256)
+
 	if err := (&controller.ClusterReconciler{
 		Client:         mgr.GetClient(),
 		Scheme:         mgr.GetScheme(),
 		Dynamo:         dynamoClient,
 		RegionalConfig: rcfg,
+		StatusEvents:   clusterStatusEvents,
+		EventRouter:    eventRouter,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "cluster")
 		os.Exit(1)
 	}
 	if err := (&controller.NodePoolReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Dynamo: dynamoClient,
+		Client:       mgr.GetClient(),
+		Scheme:       mgr.GetScheme(),
+		Dynamo:       dynamoClient,
+		StatusEvents: nodePoolStatusEvents,
+		EventRouter:  eventRouter,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "nodepool")
 		os.Exit(1)
@@ -179,15 +186,13 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "placement")
 		os.Exit(1)
 	}
-
-	manifestStatusEvents := make(chan event.GenericEvent, 256)
-	manifestReconciler := &controller.ManifestReconciler{
+	if err := (&controller.ManifestReconciler{
 		Client:       mgr.GetClient(),
 		Scheme:       mgr.GetScheme(),
 		Dynamo:       dynamoClient,
 		StatusEvents: manifestStatusEvents,
-	}
-	if err := manifestReconciler.SetupWithManager(mgr); err != nil {
+		EventRouter:  eventRouter,
+	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "manifest")
 		os.Exit(1)
 	}
@@ -209,21 +214,8 @@ func main() {
 		dynamoDBClient,
 		streamsClient,
 		mcLoader,
-		func(documentID string) {
-			nn, ok := manifestReconciler.DocIndex.Load(documentID)
-			if !ok {
-				return
-			}
-			namespacedName := nn.(types.NamespacedName)
-			manifestStatusEvents <- event.GenericEvent{
-				Object: &metav1.PartialObjectMetadata{
-					ObjectMeta: metav1.ObjectMeta{
-						Namespace: namespacedName.Namespace,
-						Name:      namespacedName.Name,
-					},
-				},
-			}
-		},
+		[]string{dynamo.TableSuffixStatusApplyDesires, dynamo.TableSuffixStatusReadDesires},
+		func(documentID string) { eventRouter.Dispatch(documentID) },
 		slog.Default().With("component", "statusstream"),
 	)
 	go streamMgr.Run(watchCtx, 5*time.Second)

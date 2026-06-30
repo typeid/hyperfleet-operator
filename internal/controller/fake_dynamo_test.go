@@ -48,7 +48,7 @@ type fakeDynamo struct {
 	// the real DynamoDB updateTime that kube-applier copies into
 	// ObservedDesireUpdateTime.
 	lastPutTime time.Time
-	// Set applyErr to make PutApplyDesire return an error.
+	// Set applyErr to make UpsertApplyDesire return an error.
 	applyErr error
 	// Set deleteErr to make PutDeleteDesire return an error.
 	deleteErr error
@@ -56,16 +56,16 @@ type fakeDynamo struct {
 
 var _ dynamo.DesireClient = (*fakeDynamo)(nil)
 
-func (f *fakeDynamo) PutApplyDesire(_ context.Context, _ string, desire *dynamo.ApplyDesire) error {
+func (f *fakeDynamo) UpsertApplyDesire(_ context.Context, _ string, desire *dynamo.ApplyDesire) (dynamo.UpsertResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.applyErr != nil {
-		return f.applyErr
+		return dynamo.UpsertResult{}, f.applyErr
 	}
 	f.applyCount++
 	f.applies = append(f.applies, desire)
 	f.lastPutTime = time.Now().UTC()
-	return nil
+	return dynamo.UpsertResult{Changed: true, UpdateTime: f.lastPutTime}, nil
 }
 
 func (f *fakeDynamo) PutDeleteDesire(_ context.Context, _ string, desire *dynamo.DeleteDesire) error {
@@ -79,12 +79,12 @@ func (f *fakeDynamo) PutDeleteDesire(_ context.Context, _ string, desire *dynamo
 	return nil
 }
 
-func (f *fakeDynamo) PutReadDesire(_ context.Context, _ string, desire *dynamo.ReadDesire) error {
+func (f *fakeDynamo) UpsertReadDesire(_ context.Context, _ string, desire *dynamo.ReadDesire) (dynamo.UpsertResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.readCount++
 	f.reads = append(f.reads, desire)
-	return nil
+	return dynamo.UpsertResult{Changed: true, UpdateTime: time.Now().UTC()}, nil
 }
 
 func (f *fakeDynamo) GetApplyDesireStatus(_ context.Context, _, _ string) (*dynamo.ApplyDesireStatus, error) {

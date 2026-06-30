@@ -162,7 +162,7 @@ status:
 
 ## DynamoDB Streams Integration
 
-The operator consumes DynamoDB Streams on the `status-readdesires` tables to react to status changes within ~2 seconds instead of polling. A `statusstream.Manager` runs one stream watcher per management cluster, mapping changed `documentID`s back to the owning Manifest CR via an in-memory reverse index (`DocIndex`). A 5-minute fallback requeue covers operator restarts and missed events.
+The operator consumes DynamoDB Streams on both the `status-applydesires` and `status-readdesires` tables to react to status changes within ~2 seconds instead of polling. A `statusstream.Manager` runs one stream watcher per management cluster per table suffix, mapping changed `documentID`s back to the owning CR via a shared `EventRouter`. A 5-minute fallback requeue covers operator restarts and missed events.
 
 ## Known Limitations
 

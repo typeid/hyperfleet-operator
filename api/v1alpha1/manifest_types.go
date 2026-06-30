@@ -101,12 +101,6 @@ type ManifestStatus struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	// LastSpecWriteTime records when desires were last written to DynamoDB.
-	// Used to detect stale status feedback from kube-applier that predates
-	// the current spec revision.
-	// +optional
-	LastSpecWriteTime *metav1.Time `json:"lastSpecWriteTime,omitempty"`
-
 	// ResourceStatuses contains the mirrored live state of watched resources.
 	// +optional
 	ResourceStatuses []ResourceStatus `json:"resourceStatuses,omitempty"`

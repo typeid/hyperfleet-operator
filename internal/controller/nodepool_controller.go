@@ -31,7 +31,10 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	hyperfleetv1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
 	"github.com/typeid/hyperfleet-operator/internal/dynamo"
@@ -46,8 +49,10 @@ const (
 // that kube-applier-aws applies to the management cluster.
 type NodePoolReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
-	Dynamo dynamo.DesireClient
+	Scheme       *runtime.Scheme
+	Dynamo       dynamo.DesireClient
+	StatusEvents chan event.GenericEvent
+	EventRouter  *EventRouter
 }
 
 // +kubebuilder:rbac:groups=hyperfleet.io,resources=nodepools,verbs=get;list;watch;create;update;patch;delete
@@ -101,19 +106,7 @@ func (r *NodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	docID := dynamo.NewDocumentID(taskKey, m.Group, m.Version, m.Resource, ns, m.Name)
 	readDocID := dynamo.NewDocumentID(taskKey+"-read", m.Group, m.Version, m.Resource, ns, m.Name)
 
-	// Skip full reconcile when spec hasn't changed (status-only update).
-	if nodePool.Generation == nodePool.Status.ObservedGeneration {
-		var specWriteTime time.Time
-		if nodePool.Status.LastSpecWriteTime != nil {
-			specWriteTime = nodePool.Status.LastSpecWriteTime.Time
-		}
-		applyEntry := DesireStatusEntry{DocID: docID, Resource: m.Resource, Name: m.Name, SpecWriteTime: specWriteTime}
-		r.updateStatusFromDynamo(ctx, &nodePool, statusPrefix, applyEntry, readDocID)
-		return ctrl.Result{RequeueAfter: statusRefreshDelay}, nil
-	}
-
-	specWriteTime := time.Now().UTC()
-
+	// Upsert ApplyDesire — no-op when content matches, no generation gate needed.
 	content, err := json.Marshal(m.Object)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("marshal nodepool resource: %w", err)
@@ -134,11 +127,17 @@ func (r *NodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			KubeContent: content,
 		},
 	}
-	if err := r.Dynamo.PutApplyDesire(ctx, specsPrefix, desire); err != nil {
-		return ctrl.Result{}, fmt.Errorf("put apply desire: %w", err)
+	upsertResult, err := r.Dynamo.UpsertApplyDesire(ctx, specsPrefix, desire)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("upsert apply desire: %w", err)
+	}
+	applyEntry := DesireStatusEntry{DocID: docID, Resource: m.Resource, Name: m.Name, DesireUpdateTime: upsertResult.UpdateTime}
+
+	if r.EventRouter != nil {
+		r.EventRouter.Register(docID, EventTarget{Channel: r.StatusEvents, Key: req.NamespacedName})
 	}
 
-	// Create ReadDesire for NodePool status feedback.
+	// Upsert ReadDesire for NodePool status feedback.
 	readDesire := &dynamo.ReadDesire{
 		DynamoDBMetadata: dynamo.DynamoDBMetadata{DocumentID: readDocID},
 		Spec: dynamo.ReadDesireSpec{
@@ -153,12 +152,14 @@ func (r *NodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			},
 		},
 	}
-	if err := r.Dynamo.PutReadDesire(ctx, specsPrefix, readDesire); err != nil {
-		return ctrl.Result{}, fmt.Errorf("put read desire: %w", err)
+	if _, err := r.Dynamo.UpsertReadDesire(ctx, specsPrefix, readDesire); err != nil {
+		return ctrl.Result{}, fmt.Errorf("upsert read desire: %w", err)
+	}
+	if r.EventRouter != nil {
+		r.EventRouter.Register(readDocID, EventTarget{Channel: r.StatusEvents, Key: req.NamespacedName})
 	}
 
 	// Read status feedback from DynamoDB.
-	applyEntry := DesireStatusEntry{DocID: docID, Resource: m.Resource, Name: m.Name, SpecWriteTime: specWriteTime}
 	r.updateStatusFromDynamo(ctx, &nodePool, statusPrefix, applyEntry, readDocID)
 
 	// Re-read to see phase set by updateStatusFromDynamo.
@@ -292,10 +293,6 @@ func (r *NodePoolReconciler) updateStatusFromDynamo(ctx context.Context, nodePoo
 		if meta.IsStatusConditionTrue(latest.Status.Conditions, "Ready") {
 			latest.Status.Phase = hyperfleetv1alpha1.NodePoolPhaseReady
 		}
-		if !applyEntry.SpecWriteTime.IsZero() {
-			t := metav1.NewTime(applyEntry.SpecWriteTime)
-			latest.Status.LastSpecWriteTime = &t
-		}
 		latest.Status.ObservedGeneration = latest.Generation
 		return r.Status().Update(ctx, &latest)
 	}); err != nil {
@@ -345,6 +342,7 @@ func (r *NodePoolReconciler) setSyncedCondition(ctx context.Context, nodePool *h
 func (r *NodePoolReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&hyperfleetv1alpha1.NodePool{}).
+		WatchesRawSource(source.Channel(r.StatusEvents, &handler.EnqueueRequestForObject{})).
 		Named("nodepool").
 		Complete(r)
 }

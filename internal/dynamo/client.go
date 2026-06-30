@@ -2,6 +2,7 @@ package dynamo
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,17 +18,27 @@ import (
 var ErrNotFound = errors.New("desire not found")
 
 const (
-	tableSuffixApplyDesires  = "-applydesires"
-	tableSuffixDeleteDesires = "-deletedesires"
-	tableSuffixReadDesires   = "-readdesires"
-	attributeDocumentID      = "documentID"
+	TableSuffixApplyDesires       = "-applydesires"
+	TableSuffixDeleteDesires      = "-deletedesires"
+	TableSuffixReadDesires        = "-readdesires"
+	TableSuffixStatusApplyDesires = "-status-applydesires"
+	TableSuffixStatusReadDesires  = "-status-readdesires"
+	attributeDocumentID           = "documentID"
 )
+
+// UpsertResult reports whether an upsert changed the item and the updateTime
+// that should be used for staleness tracking. When Changed is false, UpdateTime
+// reflects the existing item's time so callers never need to fabricate one.
+type UpsertResult struct {
+	Changed    bool
+	UpdateTime time.Time
+}
 
 // DesireClient is the interface used by controllers to interact with DynamoDB desires.
 type DesireClient interface {
-	PutApplyDesire(ctx context.Context, specsPrefix string, desire *ApplyDesire) error
+	UpsertApplyDesire(ctx context.Context, specsPrefix string, desire *ApplyDesire) (UpsertResult, error)
 	PutDeleteDesire(ctx context.Context, specsPrefix string, desire *DeleteDesire) error
-	PutReadDesire(ctx context.Context, specsPrefix string, desire *ReadDesire) error
+	UpsertReadDesire(ctx context.Context, specsPrefix string, desire *ReadDesire) (UpsertResult, error)
 	GetApplyDesireStatus(ctx context.Context, statusPrefix, documentID string) (*ApplyDesireStatus, error)
 	GetDeleteDesireStatus(ctx context.Context, statusPrefix, documentID string) (*DeleteDesireStatus, error)
 	GetReadDesireStatus(ctx context.Context, statusPrefix, documentID string) (*ReadDesireStatus, error)
@@ -47,25 +58,25 @@ func NewClient(db *dynamodb.Client) *Client {
 	return &Client{db: db}
 }
 
-// PutApplyDesire writes an ApplyDesire spec to the specs table.
-func (c *Client) PutApplyDesire(ctx context.Context, specsPrefix string, desire *ApplyDesire) error {
-	return c.putDesire(ctx, specsPrefix+tableSuffixApplyDesires, desire.DocumentID, desire.Spec)
+// UpsertApplyDesire writes an ApplyDesire spec only when content has changed.
+func (c *Client) UpsertApplyDesire(ctx context.Context, specsPrefix string, desire *ApplyDesire) (UpsertResult, error) {
+	return c.upsertDesire(ctx, specsPrefix+TableSuffixApplyDesires, desire.DocumentID, desire.Spec)
 }
 
 // PutDeleteDesire writes a DeleteDesire spec to the specs table.
 func (c *Client) PutDeleteDesire(ctx context.Context, specsPrefix string, desire *DeleteDesire) error {
-	return c.putDesire(ctx, specsPrefix+tableSuffixDeleteDesires, desire.DocumentID, desire.Spec)
+	return c.putDesire(ctx, specsPrefix+TableSuffixDeleteDesires, desire.DocumentID, desire.Spec)
 }
 
-// PutReadDesire writes a ReadDesire spec to the specs table.
-func (c *Client) PutReadDesire(ctx context.Context, specsPrefix string, desire *ReadDesire) error {
-	return c.putDesire(ctx, specsPrefix+tableSuffixReadDesires, desire.DocumentID, desire.Spec)
+// UpsertReadDesire writes a ReadDesire spec only when content has changed.
+func (c *Client) UpsertReadDesire(ctx context.Context, specsPrefix string, desire *ReadDesire) (UpsertResult, error) {
+	return c.upsertDesire(ctx, specsPrefix+TableSuffixReadDesires, desire.DocumentID, desire.Spec)
 }
 
 // GetApplyDesireStatus reads an ApplyDesire from the status table.
 func (c *Client) GetApplyDesireStatus(ctx context.Context, statusPrefix, documentID string) (*ApplyDesireStatus, error) {
 	var status ApplyDesireStatus
-	if err := c.getDesireStatus(ctx, statusPrefix+tableSuffixApplyDesires, documentID, &status); err != nil {
+	if err := c.getDesireStatus(ctx, statusPrefix+TableSuffixApplyDesires, documentID, &status); err != nil {
 		return nil, err
 	}
 	return &status, nil
@@ -74,7 +85,7 @@ func (c *Client) GetApplyDesireStatus(ctx context.Context, statusPrefix, documen
 // GetDeleteDesireStatus reads a DeleteDesire from the status table.
 func (c *Client) GetDeleteDesireStatus(ctx context.Context, statusPrefix, documentID string) (*DeleteDesireStatus, error) {
 	var status DeleteDesireStatus
-	if err := c.getDesireStatus(ctx, statusPrefix+tableSuffixDeleteDesires, documentID, &status); err != nil {
+	if err := c.getDesireStatus(ctx, statusPrefix+TableSuffixDeleteDesires, documentID, &status); err != nil {
 		return nil, err
 	}
 	return &status, nil
@@ -83,7 +94,7 @@ func (c *Client) GetDeleteDesireStatus(ctx context.Context, statusPrefix, docume
 // GetReadDesireStatus reads a ReadDesire from the status table.
 func (c *Client) GetReadDesireStatus(ctx context.Context, statusPrefix, documentID string) (*ReadDesireStatus, error) {
 	var status ReadDesireStatus
-	if err := c.getDesireStatus(ctx, statusPrefix+tableSuffixReadDesires, documentID, &status); err != nil {
+	if err := c.getDesireStatus(ctx, statusPrefix+TableSuffixReadDesires, documentID, &status); err != nil {
 		return nil, err
 	}
 	return &status, nil
@@ -103,23 +114,76 @@ func (c *Client) DeleteDesireSpec(ctx context.Context, specsPrefix, suffix, docu
 	return nil
 }
 
+func computeSpecHash(spec any) (string, error) {
+	data, err := json.Marshal(spec)
+	if err != nil {
+		return "", fmt.Errorf("marshal spec for hash: %w", err)
+	}
+	h := sha256.Sum256(data)
+	return fmt.Sprintf("%x", h), nil
+}
+
+func (c *Client) upsertDesire(ctx context.Context, table, documentID string, spec any) (UpsertResult, error) {
+	newHash, err := computeSpecHash(spec)
+	if err != nil {
+		return UpsertResult{}, err
+	}
+
+	existing, err := c.db.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName:            aws.String(table),
+		ConsistentRead:       aws.Bool(true),
+		ProjectionExpression: aws.String("specHash, updateTime"),
+		Key: map[string]dynamodbtypes.AttributeValue{
+			attributeDocumentID: &dynamodbtypes.AttributeValueMemberS{Value: documentID},
+		},
+	})
+	if err != nil {
+		return UpsertResult{}, fmt.Errorf("dynamodb get %s/%s for upsert: %w", table, documentID, err)
+	}
+
+	if len(existing.Item) > 0 {
+		if hashAttr, ok := existing.Item["specHash"]; ok {
+			if s, ok := hashAttr.(*dynamodbtypes.AttributeValueMemberS); ok && s.Value == newHash {
+				var existingTime time.Time
+				if utAttr, ok := existing.Item["updateTime"]; ok {
+					if ts, ok := utAttr.(*dynamodbtypes.AttributeValueMemberS); ok {
+						existingTime, _ = time.Parse(time.RFC3339, ts.Value)
+					}
+				}
+				return UpsertResult{Changed: false, UpdateTime: existingTime}, nil
+			}
+		}
+	}
+
+	now := time.Now().UTC()
+	if err := c.putDesireWithHash(ctx, table, documentID, spec, newHash, now); err != nil {
+		return UpsertResult{}, err
+	}
+	return UpsertResult{Changed: true, UpdateTime: now}, nil
+}
+
+// putDesire writes a desire spec unconditionally (used for DeleteDesire).
 func (c *Client) putDesire(ctx context.Context, table, documentID string, spec any) error {
+	return c.putDesireWithHash(ctx, table, documentID, spec, "", time.Now().UTC())
+}
+
+func (c *Client) putDesireWithHash(ctx context.Context, table, documentID string, spec any, specHash string, updateTime time.Time) error {
 	specAttrs, err := attributevalue.MarshalMap(spec)
 	if err != nil {
 		return fmt.Errorf("marshal spec: %w", err)
 	}
 
-	// kube-applier-aws unmarshals into a struct with `Spec` tagged as
-	// dynamodbav:"spec", so the spec fields must be nested under a "spec" key.
 	item := map[string]dynamodbtypes.AttributeValue{
 		attributeDocumentID: &dynamodbtypes.AttributeValueMemberS{Value: documentID},
 		"version":           &dynamodbtypes.AttributeValueMemberN{Value: "1"},
-		"updateTime":        &dynamodbtypes.AttributeValueMemberS{Value: time.Now().UTC().Format(time.RFC3339)},
+		"updateTime":        &dynamodbtypes.AttributeValueMemberS{Value: updateTime.Format(time.RFC3339)},
 		"spec":              &dynamodbtypes.AttributeValueMemberM{Value: specAttrs},
 	}
 
-	// For ApplyDesireSpec, kubeContent is []byte but needs to be stored as a
-	// top-level string attribute for kube-applier-aws compatibility.
+	if specHash != "" {
+		item["specHash"] = &dynamodbtypes.AttributeValueMemberS{Value: specHash}
+	}
+
 	if specMap, ok := spec.(ApplyDesireSpec); ok && specMap.KubeContent != nil {
 		item["spec_kubeContent"] = &dynamodbtypes.AttributeValueMemberS{Value: string(specMap.KubeContent)}
 		delete(specAttrs, "kubeContent")

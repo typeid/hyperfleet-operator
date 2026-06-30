@@ -31,9 +31,11 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	hypershiftv1beta1 "github.com/openshift/hypershift/api/hypershift/v1beta1"
 	hyperfleetv1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
@@ -43,7 +45,7 @@ import (
 
 const (
 	clusterFinalizer   = "hyperfleet.io/cluster"
-	statusRefreshDelay = 30 * time.Second
+	statusRefreshDelay = 5 * time.Minute
 	taskKey            = "hyperfleet-operator"
 )
 
@@ -54,6 +56,8 @@ type ClusterReconciler struct {
 	Scheme         *runtime.Scheme
 	Dynamo         dynamo.DesireClient
 	RegionalConfig render.RegionalConfig
+	StatusEvents   chan event.GenericEvent
+	EventRouter    *EventRouter
 }
 
 // +kubebuilder:rbac:groups=hyperfleet.io,resources=clusters,verbs=get;list;watch;create;update;patch;delete
@@ -114,28 +118,8 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	hcNs := fmt.Sprintf("clusters-%s", cluster.Name)
 	readDocID := dynamo.NewDocumentID(taskKey+"-read", "hypershift.openshift.io", "v1beta1", "hostedclusters", hcNs, hcName)
 
-	// Determine specWriteTime: fresh on spec change, persisted on status-only refresh.
-	var specWriteTime time.Time
-	specChanged := cluster.Generation != cluster.Status.ObservedGeneration
-	if specChanged {
-		specWriteTime = time.Now().UTC()
-	} else if cluster.Status.LastSpecWriteTime != nil {
-		specWriteTime = cluster.Status.LastSpecWriteTime.Time
-	}
-
+	// Upsert ApplyDesires — no-op when content matches, no generation gate needed.
 	var applyEntries []DesireStatusEntry
-	for _, m := range resources {
-		docID := dynamo.NewDocumentID(taskKey, m.Group, m.Version, m.Resource, m.Namespace, m.Name)
-		applyEntries = append(applyEntries, DesireStatusEntry{DocID: docID, Resource: m.Resource, Name: m.Name, SpecWriteTime: specWriteTime})
-	}
-
-	// Skip full reconcile when spec hasn't changed (status-only update).
-	if !specChanged {
-		r.updateStatusFromDynamo(ctx, &cluster, statusPrefix, readDocID, applyEntries)
-		return ctrl.Result{RequeueAfter: statusRefreshDelay}, nil
-	}
-
-	// Write ApplyDesires.
 	for _, m := range resources {
 		docID := dynamo.NewDocumentID(taskKey, m.Group, m.Version, m.Resource, m.Namespace, m.Name)
 		content, err := json.Marshal(m.Object)
@@ -158,12 +142,18 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				KubeContent: content,
 			},
 		}
-		if err := r.Dynamo.PutApplyDesire(ctx, specsPrefix, desire); err != nil {
-			return ctrl.Result{}, fmt.Errorf("put apply desire %s: %w", m.Name, err)
+		result, err := r.Dynamo.UpsertApplyDesire(ctx, specsPrefix, desire)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("upsert apply desire %s: %w", m.Name, err)
+		}
+		applyEntries = append(applyEntries, DesireStatusEntry{DocID: docID, Resource: m.Resource, Name: m.Name, DesireUpdateTime: result.UpdateTime})
+
+		if r.EventRouter != nil {
+			r.EventRouter.Register(docID, EventTarget{Channel: r.StatusEvents, Key: req.NamespacedName})
 		}
 	}
 
-	// Write ReadDesire for HostedCluster status feedback.
+	// Upsert ReadDesire for HostedCluster status feedback.
 	readDesire := &dynamo.ReadDesire{
 		DynamoDBMetadata: dynamo.DynamoDBMetadata{DocumentID: readDocID},
 		Spec: dynamo.ReadDesireSpec{
@@ -178,8 +168,11 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			},
 		},
 	}
-	if err := r.Dynamo.PutReadDesire(ctx, specsPrefix, readDesire); err != nil {
-		return ctrl.Result{}, fmt.Errorf("put read desire: %w", err)
+	if _, err := r.Dynamo.UpsertReadDesire(ctx, specsPrefix, readDesire); err != nil {
+		return ctrl.Result{}, fmt.Errorf("upsert read desire: %w", err)
+	}
+	if r.EventRouter != nil {
+		r.EventRouter.Register(readDocID, EventTarget{Channel: r.StatusEvents, Key: req.NamespacedName})
 	}
 
 	// Read status feedback from DynamoDB and update Cluster status.
@@ -203,13 +196,8 @@ func (r *ClusterReconciler) reconcileDelete(ctx context.Context, cluster *hyperf
 	log.Info("Cluster deleting", "cluster", cluster.Name)
 	r.setPhase(ctx, cluster, hyperfleetv1alpha1.ClusterPhaseDeleting)
 
-	// Step 1: Delete NodePools and HostedCluster simultaneously.
-	// The HostedCluster DeleteDesire must be written before or alongside
-	// NodePool deletion so HyperShift sees the cluster is terminating and
-	// skips node drains, which otherwise stall on PDBs.
-
-	// Use PlacementRef from status; fall back to looking up the Placement directly
-	// to avoid skipping DynamoDB cleanup if the PlacementReconciler hasn't run yet.
+	// Resolve the management cluster. If none is set, no resources were ever
+	// placed, so skip straight to Placement/finalizer cleanup.
 	mc := ""
 	if cluster.Status.PlacementRef != nil {
 		mc = cluster.Status.PlacementRef.ManagementCluster
@@ -220,7 +208,14 @@ func (r *ClusterReconciler) reconcileDelete(ctx context.Context, cluster *hyperf
 			mc = placement.Spec.ManagementCluster
 		}
 	}
+	if mc == "" {
+		return r.cleanupAndRemoveFinalizer(ctx, cluster)
+	}
 
+	// Step 1: Delete NodePools and HostedCluster simultaneously.
+	// The HostedCluster DeleteDesire must be written before or alongside
+	// NodePool deletion so HyperShift sees the cluster is terminating and
+	// skips node drains, which otherwise stall on PDBs.
 	var nodePools hyperfleetv1alpha1.NodePoolList
 	if err := r.List(ctx, &nodePools, client.InNamespace(cluster.Namespace)); err != nil {
 		return ctrl.Result{}, fmt.Errorf("list nodepools: %w", err)
@@ -240,100 +235,74 @@ func (r *ClusterReconciler) reconcileDelete(ctx context.Context, cluster *hyperf
 		pendingNodePools++
 	}
 
-	if mc != "" {
-		specsPrefix := dynamo.SpecsPrefix(mc)
-		statusPrefix := dynamo.StatusPrefix(mc)
-		ns := fmt.Sprintf("clusters-%s", cluster.Name)
-		hcName := cluster.Spec.Name
+	specsPrefix := dynamo.SpecsPrefix(mc)
+	statusPrefix := dynamo.StatusPrefix(mc)
+	ns := fmt.Sprintf("clusters-%s", cluster.Name)
+	hcName := cluster.Spec.Name
 
-		// Remove all ApplyDesire specs to prevent kube-applier from racing
-		// and re-applying resources that are being deleted.
-		resources, err := render.ClusterResources(cluster, r.RegionalConfig)
-		if err != nil {
-			log.Error(err, "failed to render cluster resources for cleanup")
-		} else {
-			for _, m := range resources {
-				applyDocID := dynamo.NewDocumentID(taskKey, m.Group, m.Version, m.Resource, m.Namespace, m.Name)
-				if err := r.Dynamo.DeleteDesireSpec(ctx, specsPrefix, "-applydesires", applyDocID); err != nil {
-					log.Error(err, "failed to clean up ApplyDesire spec", "resource", m.Name)
-				}
+	// Remove all ApplyDesire specs to prevent kube-applier from racing
+	// and re-applying resources that are being deleted.
+	resources, err := render.ClusterResources(cluster, r.RegionalConfig)
+	if err != nil {
+		log.Error(err, "failed to render cluster resources for cleanup")
+	} else {
+		for _, m := range resources {
+			applyDocID := dynamo.NewDocumentID(taskKey, m.Group, m.Version, m.Resource, m.Namespace, m.Name)
+			if err := r.Dynamo.DeleteDesireSpec(ctx, specsPrefix, "-applydesires", applyDocID); err != nil {
+				log.Error(err, "failed to clean up ApplyDesire spec", "resource", m.Name)
 			}
-		}
-
-		// Build delete entries for Synced condition tracking.
-		hcRef := dynamo.ResourceReference{
-			Group: "hypershift.openshift.io", Version: "v1beta1",
-			Resource: "hostedclusters", Namespace: ns, Name: hcName,
-		}
-		nsRef := dynamo.ResourceReference{
-			Group: "", Version: "v1", Resource: "namespaces", Name: ns,
-		}
-		deleteEntries := []DesireStatusEntry{
-			{DocID: dynamo.NewDocumentID(taskKey+"-delete", hcRef.Group, hcRef.Version, hcRef.Resource, hcRef.Namespace, hcRef.Name), Resource: hcRef.Resource, Name: hcRef.Name},
-			{DocID: dynamo.NewDocumentID(taskKey+"-delete", nsRef.Group, nsRef.Version, nsRef.Resource, nsRef.Namespace, nsRef.Name), Resource: nsRef.Resource, Name: nsRef.Name},
-		}
-
-		// Write the HostedCluster DeleteDesire and check its status.
-		hcResult, err := r.writeAndWaitDeleteDesire(ctx, specsPrefix, statusPrefix, mc, cluster.Name, hcRef)
-		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("delete hostedcluster: %w", err)
-		}
-
-		if !hcResult.IsZero() {
-			log.Info("Waiting for HostedCluster deletion", "hostedCluster", hcName)
-			r.setSyncedCondition(ctx, cluster, CheckDeleteDesireStatuses(ctx, r.Dynamo, statusPrefix, deleteEntries, cluster.Generation))
-			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
-		}
-
-		// Step 2: Delete the cluster namespace to clean up all remaining resources.
-		if result, err := r.writeAndWaitDeleteDesire(ctx, specsPrefix, statusPrefix, mc, cluster.Name, nsRef); err != nil || !result.IsZero() {
-			if err != nil {
-				return ctrl.Result{}, fmt.Errorf("delete namespace: %w", err)
-			}
-			log.Info("Waiting for namespace deletion", "namespace", ns)
-			r.setSyncedCondition(ctx, cluster, CheckDeleteDesireStatuses(ctx, r.Dynamo, statusPrefix, deleteEntries, cluster.Generation))
-			return result, nil
-		}
-
-		// Clean up the HostedCluster ReadDesire spec from DynamoDB.
-		readDocID := dynamo.NewDocumentID(taskKey+"-read", "hypershift.openshift.io", "v1beta1", "hostedclusters", ns, hcName)
-		if err := r.Dynamo.DeleteDesireSpec(ctx, specsPrefix, "-readdesires", readDocID); err != nil {
-			log.Error(err, "failed to clean up ReadDesire spec", "hostedcluster", hcName)
 		}
 	}
 
-	// Wait for all NodePool CRs to be fully deleted, regardless of MC resolution.
-	if pendingNodePools > 0 {
-		log.Info("Waiting for NodePools to be deleted", "count", pendingNodePools)
+	// Build delete entries for Synced condition tracking.
+	hcRef := dynamo.ResourceReference{
+		Group: "hypershift.openshift.io", Version: "v1beta1",
+		Resource: "hostedclusters", Namespace: ns, Name: hcName,
+	}
+	nsRef := dynamo.ResourceReference{
+		Group: "", Version: "v1", Resource: "namespaces", Name: ns,
+	}
+	deleteEntries := []DesireStatusEntry{
+		{DocID: dynamo.NewDocumentID(taskKey+"-delete", hcRef.Group, hcRef.Version, hcRef.Resource, hcRef.Namespace, hcRef.Name), Resource: hcRef.Resource, Name: hcRef.Name},
+		{DocID: dynamo.NewDocumentID(taskKey+"-delete", nsRef.Group, nsRef.Version, nsRef.Resource, nsRef.Namespace, nsRef.Name), Resource: nsRef.Resource, Name: nsRef.Name},
+	}
+
+	// Write the HostedCluster DeleteDesire and check its status.
+	hcResult, err := r.writeAndWaitDeleteDesire(ctx, specsPrefix, statusPrefix, mc, cluster.Name, hcRef)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("delete hostedcluster: %w", err)
+	}
+
+	if !hcResult.IsZero() {
+		log.Info("Waiting for HostedCluster deletion", "hostedCluster", hcName)
+		r.setSyncedCondition(ctx, cluster, CheckDeleteDesireStatuses(ctx, r.Dynamo, statusPrefix, deleteEntries, cluster.Generation))
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
-	// Step 3: Delete the Placement
-	placementName := fmt.Sprintf("%s-placement", cluster.Name)
-	var placement hyperfleetv1alpha1.Placement
-	if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: placementName}, &placement); err == nil {
-		log.Info("Deleting Placement", "placement", placementName)
-		if err := r.Delete(ctx, &placement); err != nil && !apierrors.IsNotFound(err) {
-			return ctrl.Result{}, fmt.Errorf("delete placement: %w", err)
-		}
+	// Step 2: Wait for NodePool CRs to be fully deleted.
+	if pendingNodePools > 0 {
+		log.Info("Waiting for NodePools to be deleted", "count", pendingNodePools)
+		r.setSyncedCondition(ctx, cluster, CheckDeleteDesireStatuses(ctx, r.Dynamo, statusPrefix, deleteEntries, cluster.Generation))
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
-	// Remove finalizer with RetryOnConflict to handle stale resourceVersion.
-	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		var latest hyperfleetv1alpha1.Cluster
-		if err := r.Get(ctx, client.ObjectKeyFromObject(cluster), &latest); err != nil {
-			return err
+	// Step 3: Delete the cluster namespace to clean up all remaining resources.
+	if result, err := r.writeAndWaitDeleteDesire(ctx, specsPrefix, statusPrefix, mc, cluster.Name, nsRef); err != nil || !result.IsZero() {
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("delete namespace: %w", err)
 		}
-		if !controllerutil.ContainsFinalizer(&latest, clusterFinalizer) {
-			return nil
-		}
-		controllerutil.RemoveFinalizer(&latest, clusterFinalizer)
-		return r.Update(ctx, &latest)
-	}); err != nil {
-		return ctrl.Result{}, fmt.Errorf("remove finalizer: %w", err)
+		log.Info("Waiting for namespace deletion", "namespace", ns)
+		r.setSyncedCondition(ctx, cluster, CheckDeleteDesireStatuses(ctx, r.Dynamo, statusPrefix, deleteEntries, cluster.Generation))
+		return result, nil
 	}
 
-	return ctrl.Result{}, nil
+	// Clean up the HostedCluster ReadDesire spec from DynamoDB.
+	readDocID := dynamo.NewDocumentID(taskKey+"-read", "hypershift.openshift.io", "v1beta1", "hostedclusters", ns, hcName)
+	if err := r.Dynamo.DeleteDesireSpec(ctx, specsPrefix, "-readdesires", readDocID); err != nil {
+		log.Error(err, "failed to clean up ReadDesire spec", "hostedcluster", hcName)
+	}
+
+	return r.cleanupAndRemoveFinalizer(ctx, cluster)
 }
 
 // writeAndWaitDeleteDesire writes a DeleteDesire and checks for confirmation.
@@ -355,6 +324,35 @@ func (r *ClusterReconciler) writeAndWaitDeleteDesire(ctx context.Context, specsP
 	if err != nil || !meta.IsStatusConditionTrue(status.Conditions, dynamo.DesireConditionSuccessful) {
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
+	return ctrl.Result{}, nil
+}
+
+func (r *ClusterReconciler) cleanupAndRemoveFinalizer(ctx context.Context, cluster *hyperfleetv1alpha1.Cluster) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	placementName := fmt.Sprintf("%s-placement", cluster.Name)
+	var placement hyperfleetv1alpha1.Placement
+	if err := r.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: placementName}, &placement); err == nil {
+		log.Info("Deleting Placement", "placement", placementName)
+		if err := r.Delete(ctx, &placement); err != nil && !apierrors.IsNotFound(err) {
+			return ctrl.Result{}, fmt.Errorf("delete placement: %w", err)
+		}
+	}
+
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var latest hyperfleetv1alpha1.Cluster
+		if err := r.Get(ctx, client.ObjectKeyFromObject(cluster), &latest); err != nil {
+			return err
+		}
+		if !controllerutil.ContainsFinalizer(&latest, clusterFinalizer) {
+			return nil
+		}
+		controllerutil.RemoveFinalizer(&latest, clusterFinalizer)
+		return r.Update(ctx, &latest)
+	}); err != nil {
+		return ctrl.Result{}, fmt.Errorf("remove finalizer: %w", err)
+	}
+
 	return ctrl.Result{}, nil
 }
 
@@ -416,10 +414,6 @@ func (r *ClusterReconciler) updateStatusFromDynamo(ctx context.Context, cluster 
 			!meta.IsStatusConditionTrue(latest.Status.Conditions, "Degraded") {
 			latest.Status.Phase = hyperfleetv1alpha1.ClusterPhaseReady
 		}
-		if len(applyEntries) > 0 && !applyEntries[0].SpecWriteTime.IsZero() {
-			t := metav1.NewTime(applyEntries[0].SpecWriteTime)
-			latest.Status.LastSpecWriteTime = &t
-		}
 		latest.Status.ObservedGeneration = latest.Generation
 		return r.Status().Update(ctx, &latest)
 	}); err != nil {
@@ -467,7 +461,7 @@ func (r *ClusterReconciler) setPhase(ctx context.Context, cluster *hyperfleetv1a
 }
 
 func (r *ClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(&hyperfleetv1alpha1.Cluster{}).
 		Watches(&hyperfleetv1alpha1.Placement{}, handler.EnqueueRequestsFromMapFunc(
 			func(ctx context.Context, obj client.Object) []reconcile.Request {
@@ -486,6 +480,23 @@ func (r *ClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				}
 			},
 		)).
-		Named("cluster").
-		Complete(r)
+		Named("cluster")
+
+	if r.StatusEvents != nil {
+		b = b.WatchesRawSource(source.Channel(
+			r.StatusEvents,
+			handler.EnqueueRequestsFromMapFunc(
+				func(_ context.Context, obj client.Object) []reconcile.Request {
+					return []reconcile.Request{{
+						NamespacedName: types.NamespacedName{
+							Namespace: obj.GetNamespace(),
+							Name:      obj.GetName(),
+						},
+					}}
+				},
+			),
+		))
+	}
+
+	return b.Complete(r)
 }

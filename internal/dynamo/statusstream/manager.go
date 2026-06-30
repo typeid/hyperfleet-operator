@@ -2,7 +2,6 @@ package statusstream
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -13,19 +12,18 @@ import (
 	"github.com/typeid/hyperfleet-operator/internal/mcconfig"
 )
 
-const tableSuffixStatusReadDesires = "-status-readdesires"
-
 type watcherHandle struct {
 	cancel context.CancelFunc
 }
 
-// Manager discovers management clusters and runs one Watcher per MC's
-// status-readdesires table. It polls the MC list periodically to start
-// watchers for new MCs and stop watchers for removed MCs.
+// Manager discovers management clusters and runs one Watcher per MC per
+// table suffix. It polls the MC list periodically to start watchers for
+// new MCs and stop watchers for removed MCs.
 type Manager struct {
 	dbClient      *dynamodb.Client
 	streamsClient *dynamodbstreams.Client
 	mcLoader      *mcconfig.Loader
+	tableSuffixes []string
 	onChange      OnChange
 	logger        *slog.Logger
 }
@@ -34,6 +32,7 @@ func NewManager(
 	dbClient *dynamodb.Client,
 	streamsClient *dynamodbstreams.Client,
 	mcLoader *mcconfig.Loader,
+	tableSuffixes []string,
 	onChange OnChange,
 	logger *slog.Logger,
 ) *Manager {
@@ -41,6 +40,7 @@ func NewManager(
 		dbClient:      dbClient,
 		streamsClient: streamsClient,
 		mcLoader:      mcLoader,
+		tableSuffixes: tableSuffixes,
 		onChange:      onChange,
 		logger:        logger,
 	}
@@ -74,31 +74,36 @@ func (m *Manager) Run(ctx context.Context, interval time.Duration) {
 
 func (m *Manager) syncWatchers(ctx context.Context, active map[string]watcherHandle) {
 	mcs := m.mcLoader.List()
-	desired := make(map[string]struct{}, len(mcs))
+	desired := make(map[string]struct{}, len(mcs)*len(m.tableSuffixes))
 	for _, mc := range mcs {
-		desired[mc.ID] = struct{}{}
+		for _, suffix := range m.tableSuffixes {
+			desired[mc.ID+suffix] = struct{}{}
+		}
 	}
 
-	for id, entry := range active {
-		if _, ok := desired[id]; !ok {
-			m.logger.Info("stopping status stream watcher for removed MC", "mc", id)
+	for key, entry := range active {
+		if _, ok := desired[key]; !ok {
+			m.logger.Info("stopping status stream watcher", "key", key)
 			entry.cancel()
-			delete(active, id)
+			delete(active, key)
 		}
 	}
 
 	for _, mc := range mcs {
-		if _, ok := active[mc.ID]; ok {
-			continue
-		}
 		if strings.HasPrefix(mc.ID, "test-mc-") {
 			continue
 		}
-		tableName := fmt.Sprintf("%s%s", mc.ID, tableSuffixStatusReadDesires)
-		watcher := NewWatcher(m.dbClient, m.streamsClient, tableName, m.onChange, m.logger)
-		watcherCtx, cancel := context.WithCancel(ctx)
-		active[mc.ID] = watcherHandle{cancel: cancel}
-		m.logger.Info("starting status stream watcher", "mc", mc.ID, "table", tableName)
-		go watcher.Run(watcherCtx)
+		for _, suffix := range m.tableSuffixes {
+			key := mc.ID + suffix
+			if _, ok := active[key]; ok {
+				continue
+			}
+			tableName := mc.ID + suffix
+			watcher := NewWatcher(m.dbClient, m.streamsClient, tableName, m.onChange, m.logger)
+			watcherCtx, cancel := context.WithCancel(ctx)
+			active[key] = watcherHandle{cancel: cancel}
+			m.logger.Info("starting status stream watcher", "mc", mc.ID, "table", tableName)
+			go watcher.Run(watcherCtx)
+		}
 	}
 }

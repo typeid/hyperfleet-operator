@@ -22,7 +22,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -37,7 +36,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	hyperfleetv1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
@@ -60,7 +58,7 @@ type ManifestReconciler struct {
 	Scheme       *runtime.Scheme
 	Dynamo       dynamo.DesireClient
 	StatusEvents chan event.GenericEvent
-	DocIndex     sync.Map
+	EventRouter  *EventRouter
 }
 
 // +kubebuilder:rbac:groups=hyperfleet.io,resources=manifests,verbs=get;list;watch;create;update;patch;delete
@@ -93,15 +91,6 @@ func (r *ManifestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	// Build set of current resource document IDs to detect orphans,
 	// and entries for Synced condition checking.
-	// Only capture a fresh specWriteTime when the spec has actually changed.
-	// On re-reconciles (Generation == ObservedGeneration) reload the persisted
-	// value so the wrong-generation check still works.
-	var specWriteTime time.Time
-	if hfm.Generation != hfm.Status.ObservedGeneration {
-		specWriteTime = time.Now().UTC()
-	} else if hfm.Status.LastSpecWriteTime != nil {
-		specWriteTime = hfm.Status.LastSpecWriteTime.Time
-	}
 	currentDocIDs := make(map[string]struct{}, len(hfm.Spec.Resources))
 	var applyEntries []DesireStatusEntry
 
@@ -113,7 +102,6 @@ func (r *ManifestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 		docID := dynamo.NewDocumentID(scopedTaskKey, group, version, res.Resource, namespace, name)
 		currentDocIDs[docID] = struct{}{}
-		applyEntries = append(applyEntries, DesireStatusEntry{DocID: docID, Resource: res.Resource, Name: name, SpecWriteTime: specWriteTime})
 
 		desire := &dynamo.ApplyDesire{
 			DynamoDBMetadata: dynamo.DynamoDBMetadata{DocumentID: docID},
@@ -130,8 +118,14 @@ func (r *ManifestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 				KubeContent: res.Content.Raw,
 			},
 		}
-		if err := r.Dynamo.PutApplyDesire(ctx, specsPrefix, desire); err != nil {
-			return ctrl.Result{}, fmt.Errorf("put apply desire %s/%s: %w", res.Resource, name, err)
+		upsertResult, err := r.Dynamo.UpsertApplyDesire(ctx, specsPrefix, desire)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("upsert apply desire %s/%s: %w", res.Resource, name, err)
+		}
+		applyEntries = append(applyEntries, DesireStatusEntry{DocID: docID, Resource: res.Resource, Name: name, DesireUpdateTime: upsertResult.UpdateTime})
+
+		if r.EventRouter != nil {
+			r.EventRouter.Register(docID, EventTarget{Channel: r.StatusEvents, Key: types.NamespacedName{Namespace: hfm.Namespace, Name: hfm.Name}})
 		}
 	}
 
@@ -152,7 +146,6 @@ func (r *ManifestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			return ctrl.Result{}, fmt.Errorf("extract metadata for ReadDesire %s: %w", res.Resource, err)
 		}
 		readDocID := dynamo.NewDocumentID(scopedTaskKey+"-read", group, version, res.Resource, namespace, name)
-		r.DocIndex.Store(readDocID, types.NamespacedName{Namespace: hfm.Namespace, Name: hfm.Name})
 		readDesire := &dynamo.ReadDesire{
 			DynamoDBMetadata: dynamo.DynamoDBMetadata{DocumentID: readDocID},
 			Spec: dynamo.ReadDesireSpec{
@@ -167,8 +160,11 @@ func (r *ManifestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 				},
 			},
 		}
-		if err := r.Dynamo.PutReadDesire(ctx, specsPrefix, readDesire); err != nil {
-			return ctrl.Result{}, fmt.Errorf("put read desire %s/%s: %w", res.Resource, name, err)
+		if _, err := r.Dynamo.UpsertReadDesire(ctx, specsPrefix, readDesire); err != nil {
+			return ctrl.Result{}, fmt.Errorf("upsert read desire %s/%s: %w", res.Resource, name, err)
+		}
+		if r.EventRouter != nil {
+			r.EventRouter.Register(readDocID, EventTarget{Channel: r.StatusEvents, Key: types.NamespacedName{Namespace: hfm.Namespace, Name: hfm.Name}})
 		}
 	}
 
@@ -196,10 +192,6 @@ func (r *ManifestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			latest.Status.Phase = hyperfleetv1alpha1.ManifestPhaseSyncing
 		}
 		latest.Status.AppliedResources = int32(len(hfm.Spec.Resources))
-		if !specWriteTime.IsZero() {
-			t := metav1.NewTime(specWriteTime)
-			latest.Status.LastSpecWriteTime = &t
-		}
 		latest.Status.ObservedGeneration = latest.Generation
 		return r.Status().Update(ctx, &latest)
 	}); err != nil {
@@ -293,7 +285,9 @@ func (r *ManifestReconciler) reconcileDelete(ctx context.Context, hfm *hyperflee
 		}
 		group, version, name, namespace, _ := extractResourceMeta(res.Content.Raw)
 		readDocID := dynamo.NewDocumentID(readTaskKey, group, version, res.Resource, namespace, name)
-		r.DocIndex.Delete(readDocID)
+		if r.EventRouter != nil {
+			r.EventRouter.Deregister(readDocID)
+		}
 		if err := r.Dynamo.DeleteDesireSpec(ctx, specsPrefix, "-readdesires", readDocID); err != nil {
 			log.Error(err, "failed to clean up ReadDesire spec", "resource", res.Resource, "name", name)
 		}
@@ -416,27 +410,11 @@ func (r *ManifestReconciler) setSyncedCondition(ctx context.Context, hfm *hyperf
 }
 
 func (r *ManifestReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	b := ctrl.NewControllerManagedBy(mgr).
+	return ctrl.NewControllerManagedBy(mgr).
 		For(&hyperfleetv1alpha1.Manifest{}).
-		Named("manifest")
-
-	if r.StatusEvents != nil {
-		b = b.WatchesRawSource(source.Channel(
-			r.StatusEvents,
-			handler.EnqueueRequestsFromMapFunc(
-				func(_ context.Context, obj client.Object) []reconcile.Request {
-					return []reconcile.Request{{
-						NamespacedName: types.NamespacedName{
-							Namespace: obj.GetNamespace(),
-							Name:      obj.GetName(),
-						},
-					}}
-				},
-			),
-		))
-	}
-
-	return b.Complete(r)
+		WatchesRawSource(source.Channel(r.StatusEvents, &handler.EnqueueRequestForObject{})).
+		Named("manifest").
+		Complete(r)
 }
 
 // manifestScopedTaskKey returns a taskKey scoped to the CR's identity,
