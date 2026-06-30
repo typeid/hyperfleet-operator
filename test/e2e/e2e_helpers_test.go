@@ -49,17 +49,6 @@ func attrString(item map[string]dynamodbtypes.AttributeValue, keys ...string) st
 	return ""
 }
 
-func attrStringDirect(item map[string]dynamodbtypes.AttributeValue, key string) string {
-	av, ok := item[key]
-	if !ok {
-		return ""
-	}
-	if sv, ok := av.(*dynamodbtypes.AttributeValueMemberS); ok {
-		return sv.Value
-	}
-	return ""
-}
-
 func purgeTable(tableName string) {
 	items := scanTable(tableName)
 	for _, item := range items {

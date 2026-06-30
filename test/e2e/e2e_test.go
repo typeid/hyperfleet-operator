@@ -15,6 +15,25 @@ import (
 var _ = Describe("Cross-component interaction", func() {
 	const testNS = "111222333444"
 
+	AfterEach(func() {
+		c := &hyperfleetv1alpha1.Cluster{}
+		if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: "e2e-sep-test"}, c); err == nil {
+			controllerutil.RemoveFinalizer(c, "hyperfleet.io/cluster")
+			_ = k8sClient.Update(ctx, c)
+			_ = k8sClient.Delete(ctx, c)
+		}
+		p := &hyperfleetv1alpha1.Placement{}
+		if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: "e2e-sep-test-placement"}, p); err == nil {
+			_ = k8sClient.Delete(ctx, p)
+		}
+		h := &hyperfleetv1alpha1.Manifest{}
+		if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: "e2e-monitoring"}, h); err == nil {
+			controllerutil.RemoveFinalizer(h, "hyperfleet.io/manifest")
+			_ = k8sClient.Update(ctx, h)
+			_ = k8sClient.Delete(ctx, h)
+		}
+	})
+
 	It("should keep manifest and cluster desires separate", func() {
 		By("creating a Cluster CR")
 		cluster := newE2ECluster("e2e-sep-test")
@@ -52,26 +71,9 @@ var _ = Describe("Cross-component interaction", func() {
 		items := scanTable(specsTable)
 		docIDs := map[string]bool{}
 		for _, item := range items {
-			docIDs[attrStringDirect(item, "documentID")] = true
+			docIDs[attrString(item, "documentID")] = true
 		}
 		Expect(docIDs).To(HaveKey(clusterDocID))
 		Expect(docIDs).To(HaveKey(manifestDocID))
-
-		c := &hyperfleetv1alpha1.Cluster{}
-		if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: "e2e-sep-test"}, c); err == nil {
-			controllerutil.RemoveFinalizer(c, "hyperfleet.io/cluster")
-			_ = k8sClient.Update(ctx, c)
-			_ = k8sClient.Delete(ctx, c)
-		}
-		p := &hyperfleetv1alpha1.Placement{}
-		if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: "e2e-sep-test-placement"}, p); err == nil {
-			_ = k8sClient.Delete(ctx, p)
-		}
-		h := &hyperfleetv1alpha1.Manifest{}
-		if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: "e2e-monitoring"}, h); err == nil {
-			controllerutil.RemoveFinalizer(h, "hyperfleet.io/manifest")
-			_ = k8sClient.Update(ctx, h)
-			_ = k8sClient.Delete(ctx, h)
-		}
 	})
 })

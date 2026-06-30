@@ -92,7 +92,7 @@ var _ = Describe("Cluster lifecycle", func() {
 		for _, item := range items {
 			resource := attrString(item, "spec", "targetItem", "resource")
 			if resource == "hostedclusters" {
-				raw := attrStringDirect(item, "spec_kubeContent")
+				raw := attrString(item, "spec_kubeContent")
 				Expect(raw).NotTo(BeEmpty(), "kubeContent should not be empty")
 				Expect(json.Unmarshal([]byte(raw), &hcContent)).To(Succeed())
 				break
@@ -141,7 +141,7 @@ var _ = Describe("Cluster lifecycle", func() {
 		Eventually(func(g Gomega) {
 			items := scanTable(readTable)
 			g.Expect(len(items)).To(BeNumerically(">=", 1))
-			readDocID = attrStringDirect(items[0], "documentID")
+			readDocID = attrString(items[0], "documentID")
 			g.Expect(readDocID).NotTo(BeEmpty())
 		}).Should(Succeed())
 

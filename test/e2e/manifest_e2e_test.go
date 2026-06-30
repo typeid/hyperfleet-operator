@@ -5,11 +5,14 @@ package e2e
 import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	hyperfleetv1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
+	"github.com/typeid/hyperfleet-operator/internal/controller"
 	dynamo "github.com/typeid/hyperfleet-operator/internal/dynamo"
 )
 
@@ -60,7 +63,7 @@ var _ = Describe("Manifest lifecycle", func() {
 		items := scanTable(specsTable)
 		for _, item := range items {
 			if attrString(item, "spec", "targetItem", "resource") == "jobs" {
-				content := attrStringDirect(item, "spec_kubeContent")
+				content := attrString(item, "spec_kubeContent")
 				Expect(content).To(ContainSubstring("e2e-job-abc123"))
 				Expect(content).To(ContainSubstring("e2e-runner"))
 			}
@@ -73,19 +76,23 @@ var _ = Describe("Manifest lifecycle", func() {
 		)
 		found := false
 		for _, item := range items {
-			if attrStringDirect(item, "documentID") == expectedDocID {
+			if attrString(item, "documentID") == expectedDocID {
 				found = true
 				break
 			}
 		}
 		Expect(found).To(BeTrue(), "namespace desire should have scoped document ID %s", expectedDocID)
 
-		By("verifying status is updated")
+		By("verifying status and Synced condition")
 		Eventually(func(g Gomega) {
 			var updated hyperfleetv1alpha1.Manifest
 			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &updated)).To(Succeed())
 			g.Expect(updated.Status.Phase).To(Equal(hyperfleetv1alpha1.ManifestPhaseApplied))
 			g.Expect(updated.Status.AppliedResources).To(Equal(int32(4)))
+			synced := meta.FindStatusCondition(updated.Status.Conditions, controller.ConditionSynced)
+			g.Expect(synced).NotTo(BeNil())
+			g.Expect(synced.Status).To(Equal(metav1.ConditionTrue))
+			g.Expect(synced.Reason).To(Equal("AllSynced"))
 		}).Should(Succeed())
 	})
 
@@ -114,7 +121,7 @@ var _ = Describe("Manifest lifecycle", func() {
 			items := scanTable(specsTable)
 			for _, item := range items {
 				if attrString(item, "spec", "targetItem", "name") == "e2e-job-abc123" {
-					content := attrStringDirect(item, "spec_kubeContent")
+					content := attrString(item, "spec_kubeContent")
 					g.Expect(content).To(ContainSubstring("e2e-runner:v2"))
 					return
 				}
@@ -189,7 +196,7 @@ var _ = Describe("Manifest lifecycle", func() {
 		saDesireIDs := []string{}
 		for _, item := range items {
 			if attrString(item, "spec", "targetItem", "resource") == "serviceaccounts" {
-				saDesireIDs = append(saDesireIDs, attrStringDirect(item, "documentID"))
+				saDesireIDs = append(saDesireIDs, attrString(item, "documentID"))
 			}
 		}
 		Expect(saDesireIDs).To(HaveLen(2), "expected 2 SA ApplyDesires, one per CR")
@@ -211,7 +218,7 @@ var _ = Describe("Manifest lifecycle", func() {
 		items = scanTable(specsTable)
 		found := false
 		for _, item := range items {
-			if attrStringDirect(item, "documentID") == expectedB {
+			if attrString(item, "documentID") == expectedB {
 				found = true
 				break
 			}

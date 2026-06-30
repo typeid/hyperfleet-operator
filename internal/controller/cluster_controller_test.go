@@ -21,6 +21,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -254,6 +255,148 @@ var _ = Describe("Cluster Controller", func() {
 			applyCleanups, readCleanups := fd.countSpecCleanups()
 			Expect(applyCleanups).To(Equal(21), "should clean up 7 ApplyDesire specs on each of 3 reconcile passes")
 			Expect(readCleanups).To(Equal(1), "should clean up ReadDesire spec")
+		})
+
+		It("should propagate HC status feedback and set Phase=Ready", func() {
+			resource := newTestCluster(clusterName)
+			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+
+			placement := &hyperfleetv1alpha1.Placement{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      clusterName + "-placement",
+					Namespace: testNS,
+				},
+				Spec: hyperfleetv1alpha1.PlacementSpec{
+					ClusterRef:        clusterName,
+					ManagementCluster: "mc01",
+				},
+			}
+			Expect(k8sClient.Create(ctx, placement)).To(Succeed())
+			placement.Status.Phase = hyperfleetv1alpha1.PlacementPhaseBound
+			Expect(k8sClient.Status().Update(ctx, placement)).To(Succeed())
+
+			fd := &fakeDynamo{
+				applyStatus: &dynamo.ApplyDesireStatus{
+					Conditions: []metav1.Condition{{
+						Type: dynamo.DesireConditionSuccessful, Status: metav1.ConditionTrue, Reason: "NoErrors",
+					}},
+				},
+				readStatus: &dynamo.ReadDesireStatus{
+					KubeContent: []byte(`{
+						"status": {
+							"conditions": [
+								{"type": "Available", "status": "True", "reason": "HostedClusterAsExpected", "lastTransitionTime": "2026-06-25T10:00:00Z"},
+								{"type": "Degraded", "status": "False", "reason": "AsExpected", "lastTransitionTime": "2026-06-25T10:00:00Z"}
+							],
+							"version": {
+								"history": [{"version": "4.17.0"}]
+							},
+							"controlPlaneEndpoint": {
+								"host": "api.my-cluster.example.com",
+								"port": 6443
+							}
+						}
+					}`),
+				},
+			}
+			reconciler := &ClusterReconciler{
+				Client:         k8sClient,
+				Scheme:         k8sClient.Scheme(),
+				Dynamo:         fd,
+				RegionalConfig: render.RegionalConfig{BaseDomain: "example.com", AWSRegion: "us-east-1"},
+			}
+
+			// First reconcile: adds finalizer.
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: clusterName},
+			})
+			// Second reconcile: creates desires + sets Provisioning.
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: clusterName},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			// Third reconcile: phase is already Provisioning so setPhase is
+			// skipped and Ready from updateStatusFromDynamo persists.
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: clusterName},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var updated hyperfleetv1alpha1.Cluster
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: clusterName}, &updated)).To(Succeed())
+
+			Expect(updated.Status.Phase).To(Equal(hyperfleetv1alpha1.ClusterPhaseReady))
+			Expect(updated.Status.Version).To(Equal("4.17.0"))
+			Expect(updated.Status.ControlPlaneEndpoint.Host).To(Equal("api.my-cluster.example.com"))
+			Expect(updated.Status.ControlPlaneEndpoint.Port).To(Equal(int32(6443)))
+
+			availCond := meta.FindStatusCondition(updated.Status.Conditions, "Available")
+			Expect(availCond).NotTo(BeNil())
+			Expect(availCond.Status).To(Equal(metav1.ConditionTrue))
+
+			degradedCond := meta.FindStatusCondition(updated.Status.Conditions, "Degraded")
+			Expect(degradedCond).NotTo(BeNil())
+			Expect(degradedCond.Status).To(Equal(metav1.ConditionFalse))
+		})
+
+		It("should not set Phase=Ready when cluster is Degraded", func() {
+			resource := newTestCluster(clusterName)
+			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+
+			placement := &hyperfleetv1alpha1.Placement{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      clusterName + "-placement",
+					Namespace: testNS,
+				},
+				Spec: hyperfleetv1alpha1.PlacementSpec{
+					ClusterRef:        clusterName,
+					ManagementCluster: "mc01",
+				},
+			}
+			Expect(k8sClient.Create(ctx, placement)).To(Succeed())
+			placement.Status.Phase = hyperfleetv1alpha1.PlacementPhaseBound
+			Expect(k8sClient.Status().Update(ctx, placement)).To(Succeed())
+
+			fd := &fakeDynamo{
+				applyStatus: &dynamo.ApplyDesireStatus{
+					Conditions: []metav1.Condition{{
+						Type: dynamo.DesireConditionSuccessful, Status: metav1.ConditionTrue, Reason: "NoErrors",
+					}},
+				},
+				readStatus: &dynamo.ReadDesireStatus{
+					KubeContent: []byte(`{
+						"status": {
+							"conditions": [
+								{"type": "Available", "status": "True", "reason": "HostedClusterAsExpected", "lastTransitionTime": "2026-06-25T10:00:00Z"},
+								{"type": "Degraded", "status": "True", "reason": "ComponentFailing", "lastTransitionTime": "2026-06-25T10:00:00Z"}
+							]
+						}
+					}`),
+				},
+			}
+			reconciler := &ClusterReconciler{
+				Client:         k8sClient,
+				Scheme:         k8sClient.Scheme(),
+				Dynamo:         fd,
+				RegionalConfig: render.RegionalConfig{BaseDomain: "example.com", AWSRegion: "us-east-1"},
+			}
+
+			// Finalizer + desires + third reconcile (same as Ready test).
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: clusterName},
+			})
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: clusterName},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: clusterName},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var updated hyperfleetv1alpha1.Cluster
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: clusterName}, &updated)).To(Succeed())
+			Expect(updated.Status.Phase).NotTo(Equal(hyperfleetv1alpha1.ClusterPhaseReady))
 		})
 
 		It("should handle not-found gracefully", func() {

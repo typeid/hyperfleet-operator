@@ -192,6 +192,9 @@ spec:
                   description: ResourceStatus holds the mirrored status of a watched
                     resource from the MC.
                   properties:
+                    group:
+                      description: Group is the API group (e.g. "batch", "" for core).
+                      type: string
                     name:
                       description: Name is metadata.name of the watched resource.
                       type: string
@@ -208,6 +211,9 @@ spec:
                         Only the status is stored to avoid duplicating the full spec in etcd.
                       type: object
                       x-kubernetes-preserve-unknown-fields: true
+                    version:
+                      description: Version is the API version (e.g. "v1").
+                      type: string
                   required:
                   - name
                   - resource

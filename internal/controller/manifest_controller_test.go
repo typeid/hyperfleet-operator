@@ -471,6 +471,116 @@ var _ = Describe("Manifest Controller", func() {
 			Expect(target.Key.Name).To(Equal(manifestName))
 		})
 
+		It("should set Deleting phase on deletion", func() {
+			resource := newTestManifest(manifestName)
+			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+
+			fd := &fakeDynamo{}
+			reconciler := &ManifestReconciler{
+				Client: k8sClient, Scheme: k8sClient.Scheme(), Dynamo: fd,
+			}
+
+			// Add finalizer.
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: manifestName},
+			})
+
+			// Delete the CR.
+			var toDelete hyperfleetv1alpha1.Manifest
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &toDelete)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, &toDelete)).To(Succeed())
+
+			// Reconcile deletion (no confirmation — requeues).
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: manifestName},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var updated hyperfleetv1alpha1.Manifest
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &updated)).To(Succeed())
+			Expect(updated.Status.Phase).To(Equal(hyperfleetv1alpha1.ManifestPhaseDeleting))
+		})
+
+		It("should clean up orphaned ApplyDesire and ReadDesire specs when resources are removed", func() {
+			resource := newTestManifest(manifestName)
+			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+
+			fd := &fakeDynamo{
+				readStatus: &dynamo.ReadDesireStatus{
+					KubeContent: []byte(`{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"collect-logs-abc123","namespace":"zoa-actions"},"status":{"succeeded":1}}`),
+				},
+			}
+			er := NewEventRouter()
+			reconciler := &ManifestReconciler{
+				Client: k8sClient, Scheme: k8sClient.Scheme(), Dynamo: fd,
+				StatusEvents: make(chan event.GenericEvent, 256),
+				EventRouter:  er,
+			}
+
+			// Add finalizer.
+			_, _ = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: manifestName},
+			})
+			// Write desires + populate ResourceStatuses (generation 1).
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: manifestName},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify initial state: 4 ApplyDesires, 1 ReadDesire, 1 ResourceStatus.
+			Expect(fd.applyCount).To(Equal(4))
+			Expect(fd.readCount).To(Equal(1))
+			var initial hyperfleetv1alpha1.Manifest
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &initial)).To(Succeed())
+			Expect(initial.Status.ResourceStatuses).To(HaveLen(1))
+			Expect(initial.Status.ResourceStatuses[0].Resource).To(Equal("jobs"))
+			Expect(initial.Status.ResourceStatuses[0].Group).To(Equal("batch"))
+			Expect(initial.Status.ResourceStatuses[0].Version).To(Equal("v1"))
+
+			// Verify the watched resource's ReadDesire is registered in EventRouter.
+			readDocID := dynamo.NewDocumentID(
+				"hyperfleet-manifest/"+testNS+"/"+manifestName+"-read",
+				"batch", "v1", "jobs", "zoa-actions", "collect-logs-abc123",
+			)
+			_, ok := er.Lookup(readDocID)
+			Expect(ok).To(BeTrue())
+
+			// Now update the Manifest to remove the watched Job resource,
+			// keeping only the SA and Role.
+			initial.Spec.Resources = []hyperfleetv1alpha1.ResourceTemplate{
+				{
+					Resource: "serviceaccounts",
+					Content:  runtime.RawExtension{Raw: []byte(`{"apiVersion":"v1","kind":"ServiceAccount","metadata":{"name":"zoa-runner","namespace":"zoa-actions"}}`)},
+				},
+				{
+					Resource: "roles",
+					Content:  runtime.RawExtension{Raw: []byte(`{"apiVersion":"rbac.authorization.k8s.io/v1","kind":"Role","metadata":{"name":"zoa-runner","namespace":"zoa-actions"},"rules":[{"apiGroups":[""],"resources":["pods/log"],"verbs":["get"]}]}`)},
+				},
+			}
+			Expect(k8sClient.Update(ctx, &initial)).To(Succeed())
+
+			// Reset counters for the next reconcile.
+			fd.mu.Lock()
+			fd.deletedSpecs = nil
+			fd.mu.Unlock()
+
+			// Reconcile with the updated spec (generation 2).
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: manifestName},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// The Job was in ResourceStatuses (watched), so orphan cleanup should
+			// delete both the ApplyDesire and ReadDesire specs.
+			applyCleanups, readCleanups := fd.countSpecCleanups()
+			Expect(applyCleanups).To(BeNumerically(">=", 1), "should clean up orphaned ApplyDesire for removed Job")
+			Expect(readCleanups).To(BeNumerically(">=", 1), "should clean up orphaned ReadDesire for removed Job")
+
+			// EventRouter should be deregistered for the orphaned ReadDesire.
+			_, ok = er.Lookup(readDocID)
+			Expect(ok).To(BeFalse(), "EventRouter should deregister orphaned ReadDesire")
+		})
+
 		It("should clean up EventRouter on deletion", func() {
 			resource := newTestManifest(manifestName)
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
