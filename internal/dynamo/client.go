@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -27,6 +29,12 @@ const (
 	attributeDocumentID            = "documentID"
 )
 
+type dynamoAPI interface {
+	GetItem(ctx context.Context, params *dynamodb.GetItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error)
+	PutItem(ctx context.Context, params *dynamodb.PutItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error)
+	DeleteItem(ctx context.Context, params *dynamodb.DeleteItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.DeleteItemOutput, error)
+}
+
 // UpsertResult reports whether an upsert changed the item and the updateTime
 // that should be used for staleness tracking. When Changed is false, UpdateTime
 // reflects the existing item's time so callers never need to fabricate one.
@@ -46,16 +54,22 @@ type DesireClient interface {
 	DeleteDesireSpec(ctx context.Context, specsPrefix, suffix, documentID string) error
 }
 
+type cacheEntry struct {
+	specHash   string
+	updateTime time.Time
+}
+
 // Client writes desire specs and reads desire statuses from DynamoDB.
 // It is the inverse of kube-applier-aws: the operator writes specs and reads
 // statuses, while kube-applier reads specs and writes statuses.
 type Client struct {
-	db *dynamodb.Client
+	db    dynamoAPI
+	cache sync.Map // table/documentID → cacheEntry
 }
 
 var _ DesireClient = (*Client)(nil)
 
-func NewClient(db *dynamodb.Client) *Client {
+func NewClient(db dynamoAPI) *Client {
 	return &Client{db: db}
 }
 
@@ -103,15 +117,17 @@ func (c *Client) GetReadDesireStatus(ctx context.Context, statusPrefix, document
 
 // DeleteDesireSpec removes a desire from the specs table.
 func (c *Client) DeleteDesireSpec(ctx context.Context, specsPrefix, suffix, documentID string) error {
+	table := specsPrefix + suffix
 	_, err := c.db.DeleteItem(ctx, &dynamodb.DeleteItemInput{
-		TableName: aws.String(specsPrefix + suffix),
+		TableName: aws.String(table),
 		Key: map[string]dynamodbtypes.AttributeValue{
 			attributeDocumentID: &dynamodbtypes.AttributeValueMemberS{Value: documentID},
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("dynamodb delete %s/%s: %w", specsPrefix+suffix, documentID, err)
+		return fmt.Errorf("dynamodb delete %s/%s: %w", table, documentID, err)
 	}
+	c.cache.Delete(c.cacheKey(table, documentID))
 	return nil
 }
 
@@ -124,12 +140,26 @@ func computeSpecHash(spec any) (string, error) {
 	return fmt.Sprintf("%x", h), nil
 }
 
+func (c *Client) cacheKey(table, documentID string) string {
+	return table + "/" + documentID
+}
+
 func (c *Client) upsertDesire(ctx context.Context, table, documentID string, spec any) (UpsertResult, error) {
 	newHash, err := computeSpecHash(spec)
 	if err != nil {
 		return UpsertResult{}, err
 	}
 
+	// Fast path: if we wrote this item before and the spec hasn't changed, skip DynamoDB entirely.
+	ck := c.cacheKey(table, documentID)
+	if v, ok := c.cache.Load(ck); ok {
+		entry := v.(cacheEntry)
+		if entry.specHash == newHash {
+			return UpsertResult{Changed: false, UpdateTime: entry.updateTime}, nil
+		}
+	}
+
+	// Cache miss — fall through to DynamoDB read (cold start or spec changed).
 	existing, err := c.db.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName:            aws.String(table),
 		ProjectionExpression: aws.String("specHash, updateTime"),
@@ -147,18 +177,29 @@ func (c *Client) upsertDesire(ctx context.Context, table, documentID string, spe
 				var existingTime time.Time
 				if utAttr, ok := existing.Item["updateTime"]; ok {
 					if ts, ok := utAttr.(*dynamodbtypes.AttributeValueMemberS); ok {
-						existingTime, _ = time.Parse(time.RFC3339, ts.Value)
+						var parseErr error
+						existingTime, parseErr = time.Parse(time.RFC3339, ts.Value)
+						if parseErr != nil {
+							slog.Warn("failed to parse updateTime from DynamoDB",
+								"table", table, "documentID", documentID, "raw", ts.Value, "error", parseErr)
+						}
 					}
 				}
+				c.cache.Store(ck, cacheEntry{specHash: newHash, updateTime: existingTime})
 				return UpsertResult{Changed: false, UpdateTime: existingTime}, nil
 			}
 		}
 	}
 
-	now := time.Now().UTC()
+	// Truncate to second precision to match RFC3339 storage in DynamoDB.
+	// Without this, the cached nanosecond-precision time would always appear
+	// "after" the second-precision ObservedDesireUpdateTime that kube-applier
+	// copies from the stored value, causing staleness checks to fail.
+	now := time.Now().UTC().Truncate(time.Second)
 	if err := c.putDesireWithHash(ctx, table, documentID, spec, newHash, now); err != nil {
 		return UpsertResult{}, err
 	}
+	c.cache.Store(ck, cacheEntry{specHash: newHash, updateTime: now})
 	return UpsertResult{Changed: true, UpdateTime: now}, nil
 }
 
@@ -229,6 +270,12 @@ func (c *Client) getDesireStatus(ctx context.Context, table, documentID string, 
 		return fmt.Errorf("unmarshal %s/%s: %w", table, documentID, err)
 	}
 	return nil
+}
+
+// ResetCache clears the in-memory write-cache. This is intended for test
+// teardown where DynamoDB tables are purged between specs.
+func (c *Client) ResetCache() {
+	c.cache.Clear()
 }
 
 // TablePrefix returns the specs or status table prefix for a management cluster.

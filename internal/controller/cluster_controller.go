@@ -86,6 +86,9 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if !controllerutil.ContainsFinalizer(&cluster, clusterFinalizer) {
 		controllerutil.AddFinalizer(&cluster, clusterFinalizer)
 		if err := r.Update(ctx, &cluster); err != nil {
+			if apierrors.IsNotFound(err) {
+				return ctrl.Result{}, nil
+			}
 			return ctrl.Result{}, fmt.Errorf("add finalizer: %w", err)
 		}
 		return ctrl.Result{Requeue: true}, nil
@@ -372,7 +375,7 @@ func (r *ClusterReconciler) cleanupAndRemoveFinalizer(ctx context.Context, clust
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var latest hyperfleetv1alpha1.Cluster
 		if err := r.Get(ctx, client.ObjectKeyFromObject(cluster), &latest); err != nil {
-			return err
+			return client.IgnoreNotFound(err)
 		}
 		if !controllerutil.ContainsFinalizer(&latest, clusterFinalizer) {
 			return nil

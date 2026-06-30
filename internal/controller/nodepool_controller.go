@@ -79,6 +79,9 @@ func (r *NodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	if !controllerutil.ContainsFinalizer(&nodePool, nodePoolFinalizer) {
 		controllerutil.AddFinalizer(&nodePool, nodePoolFinalizer)
 		if err := r.Update(ctx, &nodePool); err != nil {
+			if apierrors.IsNotFound(err) {
+				return ctrl.Result{}, nil
+			}
 			return ctrl.Result{}, fmt.Errorf("add finalizer: %w", err)
 		}
 		return ctrl.Result{Requeue: true}, nil
@@ -252,7 +255,7 @@ func (r *NodePoolReconciler) reconcileDelete(ctx context.Context, nodePool *hype
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var latest hyperfleetv1alpha1.NodePool
 		if err := r.Get(ctx, client.ObjectKeyFromObject(nodePool), &latest); err != nil {
-			return err
+			return client.IgnoreNotFound(err)
 		}
 		if !controllerutil.ContainsFinalizer(&latest, nodePoolFinalizer) {
 			return nil

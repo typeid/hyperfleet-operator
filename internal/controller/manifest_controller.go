@@ -83,6 +83,9 @@ func (r *ManifestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	if !controllerutil.ContainsFinalizer(&hfm, manifestFinalizer) {
 		controllerutil.AddFinalizer(&hfm, manifestFinalizer)
 		if err := r.Update(ctx, &hfm); err != nil {
+			if apierrors.IsNotFound(err) {
+				return ctrl.Result{}, nil
+			}
 			return ctrl.Result{}, fmt.Errorf("add finalizer: %w", err)
 		}
 		return ctrl.Result{Requeue: true}, nil
@@ -353,7 +356,7 @@ func (r *ManifestReconciler) reconcileDelete(ctx context.Context, hfm *hyperflee
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var latest hyperfleetv1alpha1.Manifest
 		if err := r.Get(ctx, client.ObjectKeyFromObject(hfm), &latest); err != nil {
-			return err
+			return client.IgnoreNotFound(err)
 		}
 		if !controllerutil.ContainsFinalizer(&latest, manifestFinalizer) {
 			return nil

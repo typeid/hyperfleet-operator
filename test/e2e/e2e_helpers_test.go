@@ -17,6 +17,7 @@ import (
 
 var _ = BeforeEach(func() {
 	purgeDynamoTables()
+	dynamoCli.ResetCache()
 })
 
 func scanTable(tableName string) []map[string]dynamodbtypes.AttributeValue {

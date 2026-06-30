@@ -12,7 +12,7 @@ sequenceDiagram
     participant KA as kube-applier-aws
     participant Status as status tables
 
-    C->>Specs: UpsertDesire (hash check, skip if unchanged)
+    C->>Specs: UpsertDesire (in-memory cache, then hash check)
     KA->>Specs: poll for specs
     KA->>KA: apply/delete/read on MC
     KA->>Status: write result
@@ -25,6 +25,12 @@ sequenceDiagram
 ## Writing specs
 
 Use `UpsertApplyDesire`, `UpsertDeleteDesire`, or `UpsertReadDesire`. All three hash the spec and skip the write if unchanged, preserving the existing `updateTime`. Always use `UpsertResult.UpdateTime` when building `DesireStatusEntry`, since staleness gating compares it against the status timestamp.
+
+### Write-cache
+
+The DynamoDB client keeps an in-memory cache of `{specHash, updateTime}` per desire, keyed by table and document ID. On each upsert the cache is checked first — if the hash matches, the call returns immediately without any DynamoDB read or write. On a cache miss (cold start after restart, or spec change) it falls through to the normal `GetItem` hash-check path and populates the cache from the result. `DeleteDesireSpec` clears the cache entry.
+
+Since the operator is the sole writer to the specs tables, the cache never goes stale during normal operation. On process restart the cache is empty, so the first reconcile for each desire does one `GetItem` to warm it.
 
 ## Reading status
 

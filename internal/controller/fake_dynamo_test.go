@@ -79,7 +79,7 @@ func (f *fakeDynamo) UpsertApplyDesire(_ context.Context, _ string, desire *dyna
 	}
 	f.applyCount++
 	f.applies = append(f.applies, desire)
-	f.lastPutTime = time.Now().UTC()
+	f.lastPutTime = time.Now().UTC().Truncate(time.Second)
 	return dynamo.UpsertResult{Changed: true, UpdateTime: f.lastPutTime}, nil
 }
 
@@ -91,7 +91,7 @@ func (f *fakeDynamo) UpsertDeleteDesire(_ context.Context, _ string, desire *dyn
 	}
 	f.deleteCount++
 	f.deletes = append(f.deletes, desire)
-	return dynamo.UpsertResult{Changed: true, UpdateTime: time.Now().UTC()}, nil
+	return dynamo.UpsertResult{Changed: true, UpdateTime: time.Now().UTC().Truncate(time.Second)}, nil
 }
 
 func (f *fakeDynamo) UpsertReadDesire(_ context.Context, _ string, desire *dynamo.ReadDesire) (dynamo.UpsertResult, error) {
@@ -102,7 +102,7 @@ func (f *fakeDynamo) UpsertReadDesire(_ context.Context, _ string, desire *dynam
 	}
 	f.readCount++
 	f.reads = append(f.reads, desire)
-	return dynamo.UpsertResult{Changed: true, UpdateTime: time.Now().UTC()}, nil
+	return dynamo.UpsertResult{Changed: true, UpdateTime: time.Now().UTC().Truncate(time.Second)}, nil
 }
 
 func (f *fakeDynamo) GetApplyDesireStatus(_ context.Context, _, docID string) (*dynamo.ApplyDesireStatus, error) {
