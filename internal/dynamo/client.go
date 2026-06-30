@@ -18,13 +18,13 @@ import (
 var ErrNotFound = errors.New("desire not found")
 
 const (
-	TableSuffixApplyDesires       = "-applydesires"
-	TableSuffixDeleteDesires      = "-deletedesires"
-	TableSuffixReadDesires        = "-readdesires"
+	TableSuffixApplyDesires        = "-applydesires"
+	TableSuffixDeleteDesires       = "-deletedesires"
+	TableSuffixReadDesires         = "-readdesires"
 	TableSuffixStatusApplyDesires  = "-status-applydesires"
 	TableSuffixStatusDeleteDesires = "-status-deletedesires"
 	TableSuffixStatusReadDesires   = "-status-readdesires"
-	attributeDocumentID           = "documentID"
+	attributeDocumentID            = "documentID"
 )
 
 // UpsertResult reports whether an upsert changed the item and the updateTime
@@ -38,7 +38,7 @@ type UpsertResult struct {
 // DesireClient is the interface used by controllers to interact with DynamoDB desires.
 type DesireClient interface {
 	UpsertApplyDesire(ctx context.Context, specsPrefix string, desire *ApplyDesire) (UpsertResult, error)
-	PutDeleteDesire(ctx context.Context, specsPrefix string, desire *DeleteDesire) error
+	UpsertDeleteDesire(ctx context.Context, specsPrefix string, desire *DeleteDesire) (UpsertResult, error)
 	UpsertReadDesire(ctx context.Context, specsPrefix string, desire *ReadDesire) (UpsertResult, error)
 	GetApplyDesireStatus(ctx context.Context, statusPrefix, documentID string) (*ApplyDesireStatus, error)
 	GetDeleteDesireStatus(ctx context.Context, statusPrefix, documentID string) (*DeleteDesireStatus, error)
@@ -64,9 +64,9 @@ func (c *Client) UpsertApplyDesire(ctx context.Context, specsPrefix string, desi
 	return c.upsertDesire(ctx, specsPrefix+TableSuffixApplyDesires, desire.DocumentID, desire.Spec)
 }
 
-// PutDeleteDesire writes a DeleteDesire spec to the specs table.
-func (c *Client) PutDeleteDesire(ctx context.Context, specsPrefix string, desire *DeleteDesire) error {
-	return c.putDesire(ctx, specsPrefix+TableSuffixDeleteDesires, desire.DocumentID, desire.Spec)
+// UpsertDeleteDesire writes a DeleteDesire spec only when content has changed.
+func (c *Client) UpsertDeleteDesire(ctx context.Context, specsPrefix string, desire *DeleteDesire) (UpsertResult, error) {
+	return c.upsertDesire(ctx, specsPrefix+TableSuffixDeleteDesires, desire.DocumentID, desire.Spec)
 }
 
 // UpsertReadDesire writes a ReadDesire spec only when content has changed.
@@ -160,11 +160,6 @@ func (c *Client) upsertDesire(ctx context.Context, table, documentID string, spe
 		return UpsertResult{}, err
 	}
 	return UpsertResult{Changed: true, UpdateTime: now}, nil
-}
-
-// putDesire writes a desire spec unconditionally (used for DeleteDesire).
-func (c *Client) putDesire(ctx context.Context, table, documentID string, spec any) error {
-	return c.putDesireWithHash(ctx, table, documentID, spec, "", time.Now().UTC())
 }
 
 func (c *Client) putDesireWithHash(ctx context.Context, table, documentID string, spec any, specHash string, updateTime time.Time) error {

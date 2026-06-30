@@ -257,8 +257,8 @@ func (r *ManifestReconciler) reconcileDelete(ctx context.Context, hfm *hyperflee
 				},
 			},
 		}
-		if err := r.Dynamo.PutDeleteDesire(ctx, specsPrefix, deleteDesire); err != nil {
-			return ctrl.Result{}, fmt.Errorf("put delete desire %s/%s: %w", res.Resource, name, err)
+		if _, err := r.Dynamo.UpsertDeleteDesire(ctx, specsPrefix, deleteDesire); err != nil {
+			return ctrl.Result{}, fmt.Errorf("upsert delete desire %s/%s: %w", res.Resource, name, err)
 		}
 		entries = append(entries, deleteEntry{resource: res.Resource, name: name, docID: docID})
 	}

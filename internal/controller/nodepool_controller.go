@@ -216,8 +216,8 @@ func (r *NodePoolReconciler) reconcileDelete(ctx context.Context, nodePool *hype
 				},
 			},
 		}
-		if err := r.Dynamo.PutDeleteDesire(ctx, specsPrefix, deleteDesire); err != nil {
-			return ctrl.Result{}, fmt.Errorf("put delete desire: %w", err)
+		if _, err := r.Dynamo.UpsertDeleteDesire(ctx, specsPrefix, deleteDesire); err != nil {
+			return ctrl.Result{}, fmt.Errorf("upsert delete desire: %w", err)
 		}
 
 		deleteEntry := DesireStatusEntry{DocID: docID, Resource: m.Resource, Name: m.Name}

@@ -317,7 +317,7 @@ func (r *ClusterReconciler) writeAndWaitDeleteDesire(ctx context.Context, specsP
 			TargetItem:        target,
 		},
 	}
-	if err := r.Dynamo.PutDeleteDesire(ctx, specsPrefix, desire); err != nil {
+	if _, err := r.Dynamo.UpsertDeleteDesire(ctx, specsPrefix, desire); err != nil {
 		return ctrl.Result{}, err
 	}
 	status, err := r.Dynamo.GetDeleteDesireStatus(ctx, statusPrefix, docID)

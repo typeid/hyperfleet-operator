@@ -59,7 +59,7 @@ type fakeDynamo struct {
 	lastPutTime time.Time
 	// Set applyErr to make UpsertApplyDesire return an error.
 	applyErr error
-	// Set deleteErr to make PutDeleteDesire return an error.
+	// Set deleteErr to make UpsertDeleteDesire return an error.
 	deleteErr error
 	// Set readErr to make UpsertReadDesire return an error.
 	readErr error
@@ -83,15 +83,15 @@ func (f *fakeDynamo) UpsertApplyDesire(_ context.Context, _ string, desire *dyna
 	return dynamo.UpsertResult{Changed: true, UpdateTime: f.lastPutTime}, nil
 }
 
-func (f *fakeDynamo) PutDeleteDesire(_ context.Context, _ string, desire *dynamo.DeleteDesire) error {
+func (f *fakeDynamo) UpsertDeleteDesire(_ context.Context, _ string, desire *dynamo.DeleteDesire) (dynamo.UpsertResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.deleteErr != nil {
-		return f.deleteErr
+		return dynamo.UpsertResult{}, f.deleteErr
 	}
 	f.deleteCount++
 	f.deletes = append(f.deletes, desire)
-	return nil
+	return dynamo.UpsertResult{Changed: true, UpdateTime: time.Now().UTC()}, nil
 }
 
 func (f *fakeDynamo) UpsertReadDesire(_ context.Context, _ string, desire *dynamo.ReadDesire) (dynamo.UpsertResult, error) {

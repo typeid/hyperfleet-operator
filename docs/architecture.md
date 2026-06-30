@@ -68,9 +68,7 @@ documentID = UUIDv5(NamespaceUUID, "{taskKey}/{group}/{version}/{resource}/{name
 
 Same inputs always produce the same UUID, giving natural idempotency — re-reconciling a Cluster writes the same document IDs, updating existing rows rather than creating duplicates.
 
-### Deletion Invariant
-
-On deletion, controllers have to remove ApplyDesire specs before writing DeleteDesires. Otherwise kube-applier would re-apply a resource that's being deleted. Finalizers guarantee re-entry into the delete path, so atomicity between cleanup and write is not required. See individual controller docs for specific deletion flows.
+For details on how controllers read, write, and delete specs, see [DynamoDB Read/Write Strategy](dynamodb-strategy.md).
 
 ### Management Cluster Registry
 
