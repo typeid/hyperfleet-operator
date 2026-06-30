@@ -28,6 +28,7 @@ import (
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -44,8 +45,9 @@ const (
 // PlacementReconciler watches Cluster CRs and ensures each has a Placement.
 type PlacementReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	MCConfig *mcconfig.Loader
+	Scheme                  *runtime.Scheme
+	MCConfig                *mcconfig.Loader
+	MaxConcurrentReconciles int
 }
 
 // +kubebuilder:rbac:groups=hyperfleet.io,resources=clusters,verbs=get;list;watch
@@ -166,6 +168,7 @@ func (r *PlacementReconciler) selectManagementCluster(_ context.Context) (string
 
 func (r *PlacementReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
+		WithOptions(controller.Options{MaxConcurrentReconciles: r.MaxConcurrentReconciles}).
 		For(&hyperfleetv1alpha1.Cluster{}).
 		Watches(&hyperfleetv1alpha1.Placement{}, handler.EnqueueRequestsFromMapFunc(
 			func(ctx context.Context, obj client.Object) []reconcile.Request {

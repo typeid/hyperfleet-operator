@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -32,6 +33,7 @@ import (
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -55,10 +57,11 @@ const (
 // infrastructure-level resources (ZOA) to be deployed to MCs without new controller code.
 type ManifestReconciler struct {
 	client.Client
-	Scheme       *runtime.Scheme
-	Dynamo       dynamo.DesireClient
-	StatusEvents chan event.GenericEvent
-	EventRouter  *EventRouter
+	Scheme                  *runtime.Scheme
+	Dynamo                  dynamo.DesireClient
+	StatusEvents            chan event.GenericEvent
+	EventRouter             *EventRouter
+	MaxConcurrentReconciles int
 }
 
 // +kubebuilder:rbac:groups=hyperfleet.io,resources=manifests,verbs=get;list;watch;create;update;patch;delete
@@ -94,6 +97,14 @@ func (r *ManifestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	currentDocIDs := make(map[string]struct{}, len(hfm.Spec.Resources))
 	var applyEntries []DesireStatusEntry
 
+	type applyItem struct {
+		desire   *dynamo.ApplyDesire
+		docID    string
+		resource string
+		name     string
+	}
+	var applyItems []applyItem
+
 	for _, res := range hfm.Spec.Resources {
 		group, version, name, namespace, err := extractResourceMeta(res.Content.Raw)
 		if err != nil {
@@ -118,15 +129,38 @@ func (r *ManifestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 				KubeContent: res.Content.Raw,
 			},
 		}
-		upsertResult, err := r.Dynamo.UpsertApplyDesire(ctx, specsPrefix, desire)
-		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("upsert apply desire %s/%s: %w", res.Resource, name, err)
-		}
-		applyEntries = append(applyEntries, DesireStatusEntry{DocID: docID, Resource: res.Resource, Name: name, DesireUpdateTime: upsertResult.UpdateTime})
+		applyItems = append(applyItems, applyItem{desire: desire, docID: docID, resource: res.Resource, name: name})
 
 		if r.EventRouter != nil {
 			r.EventRouter.Register(docID, EventTarget{Channel: r.StatusEvents, Key: types.NamespacedName{Namespace: hfm.Namespace, Name: hfm.Name}})
 		}
+	}
+
+	type applyUpsertResult struct {
+		updateTime time.Time
+		err        error
+	}
+	applyResults := make([]applyUpsertResult, len(applyItems))
+	var wg sync.WaitGroup
+	for i, item := range applyItems {
+		wg.Add(1)
+		go func(idx int, desire *dynamo.ApplyDesire) {
+			defer wg.Done()
+			ur, err := r.Dynamo.UpsertApplyDesire(ctx, specsPrefix, desire)
+			if err != nil {
+				applyResults[idx] = applyUpsertResult{err: err}
+			} else {
+				applyResults[idx] = applyUpsertResult{updateTime: ur.UpdateTime}
+			}
+		}(i, item.desire)
+	}
+	wg.Wait()
+
+	for i, item := range applyItems {
+		if applyResults[i].err != nil {
+			return ctrl.Result{}, fmt.Errorf("upsert apply desire %s/%s: %w", item.resource, item.name, applyResults[i].err)
+		}
+		applyEntries = append(applyEntries, DesireStatusEntry{DocID: item.docID, Resource: item.resource, Name: item.name, DesireUpdateTime: applyResults[i].updateTime})
 	}
 
 	// H1: Clean up orphaned ApplyDesire specs from resources removed since last generation.
@@ -135,12 +169,17 @@ func (r *ManifestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	log.Info("ApplyDesires written", "count", len(hfm.Spec.Resources), "mc", mc)
 
 	// Write ReadDesires for watched resources.
-	hasWatched := false
+	type readItem struct {
+		desire   *dynamo.ReadDesire
+		resource string
+		name     string
+	}
+	var readItems []readItem
+
 	for _, res := range hfm.Spec.Resources {
 		if !res.Watch {
 			continue
 		}
-		hasWatched = true
 		group, version, name, namespace, err := extractResourceMeta(res.Content.Raw)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("extract metadata for ReadDesire %s: %w", res.Resource, err)
@@ -160,11 +199,27 @@ func (r *ManifestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 				},
 			},
 		}
-		if _, err := r.Dynamo.UpsertReadDesire(ctx, specsPrefix, readDesire); err != nil {
-			return ctrl.Result{}, fmt.Errorf("upsert read desire %s/%s: %w", res.Resource, name, err)
-		}
+		readItems = append(readItems, readItem{desire: readDesire, resource: res.Resource, name: name})
 		if r.EventRouter != nil {
 			r.EventRouter.Register(readDocID, EventTarget{Channel: r.StatusEvents, Key: types.NamespacedName{Namespace: hfm.Namespace, Name: hfm.Name}})
+		}
+	}
+
+	hasWatched := len(readItems) > 0
+	readUpsertErrs := make([]error, len(readItems))
+	wg = sync.WaitGroup{}
+	for i, item := range readItems {
+		wg.Add(1)
+		go func(idx int, desire *dynamo.ReadDesire) {
+			defer wg.Done()
+			_, readUpsertErrs[idx] = r.Dynamo.UpsertReadDesire(ctx, specsPrefix, desire)
+		}(i, item.desire)
+	}
+	wg.Wait()
+
+	for i, item := range readItems {
+		if readUpsertErrs[i] != nil {
+			return ctrl.Result{}, fmt.Errorf("upsert read desire %s/%s: %w", item.resource, item.name, readUpsertErrs[i])
 		}
 	}
 
@@ -355,38 +410,62 @@ func (r *ManifestReconciler) cleanupOrphanedDesires(ctx context.Context, hfm *hy
 
 func (r *ManifestReconciler) updateResourceStatuses(ctx context.Context, hfm *hyperfleetv1alpha1.Manifest, statusPrefix, scopedTaskKey string) {
 	log := logf.FromContext(ctx)
-	var statuses []hyperfleetv1alpha1.ResourceStatus
 
+	type watchedResource struct {
+		group, version, resource, name, namespace string
+		readDocID                                 string
+	}
+	var watched []watchedResource
 	for _, res := range hfm.Spec.Resources {
 		if !res.Watch {
 			continue
 		}
 		group, version, name, namespace, _ := extractResourceMeta(res.Content.Raw)
 		readDocID := dynamo.NewDocumentID(scopedTaskKey+"-read", group, version, res.Resource, namespace, name)
-		readStatus, err := r.Dynamo.GetReadDesireStatus(ctx, statusPrefix, readDocID)
-		if err != nil {
-			log.V(1).Info("ReadDesire status not yet available", "resource", res.Resource, "name", name)
+		watched = append(watched, watchedResource{group: group, version: version, resource: res.Resource, name: name, namespace: namespace, readDocID: readDocID})
+	}
+
+	type readResult struct {
+		status *dynamo.ReadDesireStatus
+		err    error
+	}
+	results := make([]readResult, len(watched))
+	var wg sync.WaitGroup
+	for i, w := range watched {
+		wg.Add(1)
+		go func(idx int, docID string) {
+			defer wg.Done()
+			s, err := r.Dynamo.GetReadDesireStatus(ctx, statusPrefix, docID)
+			results[idx] = readResult{status: s, err: err}
+		}(i, w.readDocID)
+	}
+	wg.Wait()
+
+	var statuses []hyperfleetv1alpha1.ResourceStatus
+	for i, w := range watched {
+		if results[i].err != nil {
+			log.V(1).Info("ReadDesire status not yet available", "resource", w.resource, "name", w.name)
 			continue
 		}
-		if readStatus.KubeContent == nil {
+		if results[i].status.KubeContent == nil {
 			continue
 		}
 		var obj struct {
 			Status json.RawMessage `json:"status"`
 		}
-		if err := json.Unmarshal(readStatus.KubeContent, &obj); err != nil {
-			log.Error(err, "failed to unmarshal KubeContent", "resource", res.Resource, "name", name)
+		if err := json.Unmarshal(results[i].status.KubeContent, &obj); err != nil {
+			log.Error(err, "failed to unmarshal KubeContent", "resource", w.resource, "name", w.name)
 			continue
 		}
 		if len(obj.Status) == 0 {
 			continue
 		}
 		statuses = append(statuses, hyperfleetv1alpha1.ResourceStatus{
-			Resource:  res.Resource,
-			Name:      name,
-			Namespace: namespace,
-			Group:     group,
-			Version:   version,
+			Resource:  w.resource,
+			Name:      w.name,
+			Namespace: w.namespace,
+			Group:     w.group,
+			Version:   w.version,
 			Status:    runtime.RawExtension{Raw: obj.Status},
 		})
 	}
@@ -448,6 +527,7 @@ func (r *ManifestReconciler) setPhase(ctx context.Context, hfm *hyperfleetv1alph
 
 func (r *ManifestReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
+		WithOptions(controller.Options{MaxConcurrentReconciles: r.MaxConcurrentReconciles}).
 		For(&hyperfleetv1alpha1.Manifest{}).
 		WatchesRawSource(source.Channel(r.StatusEvents, &handler.EnqueueRequestForObject{})).
 		Named("manifest").

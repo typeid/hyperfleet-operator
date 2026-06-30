@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -30,6 +31,7 @@ import (
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -53,11 +55,12 @@ const (
 // that kube-applier-aws applies to the management cluster.
 type ClusterReconciler struct {
 	client.Client
-	Scheme         *runtime.Scheme
-	Dynamo         dynamo.DesireClient
-	RegionalConfig render.RegionalConfig
-	StatusEvents   chan event.GenericEvent
-	EventRouter    *EventRouter
+	Scheme                  *runtime.Scheme
+	Dynamo                  dynamo.DesireClient
+	RegionalConfig          render.RegionalConfig
+	StatusEvents            chan event.GenericEvent
+	EventRouter             *EventRouter
+	MaxConcurrentReconciles int
 }
 
 // +kubebuilder:rbac:groups=hyperfleet.io,resources=clusters,verbs=get;list;watch;create;update;patch;delete
@@ -118,61 +121,88 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	hcNs := fmt.Sprintf("clusters-%s", cluster.Name)
 	readDocID := dynamo.NewDocumentID(taskKey+"-read", "hypershift.openshift.io", "v1beta1", "hostedclusters", hcNs, hcName)
 
-	// Upsert ApplyDesires — no-op when content matches, no generation gate needed.
-	var applyEntries []DesireStatusEntry
-	for _, m := range resources {
-		docID := dynamo.NewDocumentID(taskKey, m.Group, m.Version, m.Resource, m.Namespace, m.Name)
-		content, err := json.Marshal(m.Object)
-		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("marshal resource %s: %w", m.Name, err)
-		}
+	// Upsert ApplyDesires in parallel — no-op when content matches.
+	type upsertResult struct {
+		entry DesireStatusEntry
+		err   error
+	}
+	upsertResults := make([]upsertResult, len(resources))
+	var upsertWg sync.WaitGroup
+	for i, m := range resources {
+		upsertWg.Add(1)
+		go func(idx int, m render.Resource) {
+			defer upsertWg.Done()
+			docID := dynamo.NewDocumentID(taskKey, m.Group, m.Version, m.Resource, m.Namespace, m.Name)
+			content, marshalErr := json.Marshal(m.Object)
+			if marshalErr != nil {
+				upsertResults[idx] = upsertResult{err: fmt.Errorf("marshal resource %s: %w", m.Name, marshalErr)}
+				return
+			}
+			desire := &dynamo.ApplyDesire{
+				DynamoDBMetadata: dynamo.DynamoDBMetadata{DocumentID: docID},
+				Spec: dynamo.ApplyDesireSpec{
+					ManagementCluster: mc,
+					ClusterID:         cluster.Name,
+					TargetItem: dynamo.ResourceReference{
+						Group:     m.Group,
+						Version:   m.Version,
+						Resource:  m.Resource,
+						Namespace: m.Namespace,
+						Name:      m.Name,
+					},
+					KubeContent: content,
+				},
+			}
+			res, upsertErr := r.Dynamo.UpsertApplyDesire(ctx, specsPrefix, desire)
+			if upsertErr != nil {
+				upsertResults[idx] = upsertResult{err: fmt.Errorf("upsert apply desire %s: %w", m.Name, upsertErr)}
+				return
+			}
+			upsertResults[idx] = upsertResult{entry: DesireStatusEntry{DocID: docID, Resource: m.Resource, Name: m.Name, DesireUpdateTime: res.UpdateTime}}
+			if r.EventRouter != nil {
+				r.EventRouter.Register(docID, EventTarget{Channel: r.StatusEvents, Key: req.NamespacedName})
+			}
+		}(i, m)
+	}
 
-		desire := &dynamo.ApplyDesire{
-			DynamoDBMetadata: dynamo.DynamoDBMetadata{DocumentID: docID},
-			Spec: dynamo.ApplyDesireSpec{
+	// Upsert ReadDesire concurrently with ApplyDesires.
+	var readErr error
+	upsertWg.Add(1)
+	go func() {
+		defer upsertWg.Done()
+		readDesire := &dynamo.ReadDesire{
+			DynamoDBMetadata: dynamo.DynamoDBMetadata{DocumentID: readDocID},
+			Spec: dynamo.ReadDesireSpec{
 				ManagementCluster: mc,
 				ClusterID:         cluster.Name,
 				TargetItem: dynamo.ResourceReference{
-					Group:     m.Group,
-					Version:   m.Version,
-					Resource:  m.Resource,
-					Namespace: m.Namespace,
-					Name:      m.Name,
+					Group:     "hypershift.openshift.io",
+					Version:   "v1beta1",
+					Resource:  "hostedclusters",
+					Namespace: hcNs,
+					Name:      hcName,
 				},
-				KubeContent: content,
 			},
 		}
-		result, err := r.Dynamo.UpsertApplyDesire(ctx, specsPrefix, desire)
-		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("upsert apply desire %s: %w", m.Name, err)
+		if _, err := r.Dynamo.UpsertReadDesire(ctx, specsPrefix, readDesire); err != nil {
+			readErr = fmt.Errorf("upsert read desire: %w", err)
+			return
 		}
-		applyEntries = append(applyEntries, DesireStatusEntry{DocID: docID, Resource: m.Resource, Name: m.Name, DesireUpdateTime: result.UpdateTime})
-
 		if r.EventRouter != nil {
-			r.EventRouter.Register(docID, EventTarget{Channel: r.StatusEvents, Key: req.NamespacedName})
+			r.EventRouter.Register(readDocID, EventTarget{Channel: r.StatusEvents, Key: req.NamespacedName})
 		}
-	}
+	}()
+	upsertWg.Wait()
 
-	// Upsert ReadDesire for HostedCluster status feedback.
-	readDesire := &dynamo.ReadDesire{
-		DynamoDBMetadata: dynamo.DynamoDBMetadata{DocumentID: readDocID},
-		Spec: dynamo.ReadDesireSpec{
-			ManagementCluster: mc,
-			ClusterID:         cluster.Name,
-			TargetItem: dynamo.ResourceReference{
-				Group:     "hypershift.openshift.io",
-				Version:   "v1beta1",
-				Resource:  "hostedclusters",
-				Namespace: hcNs,
-				Name:      hcName,
-			},
-		},
+	if readErr != nil {
+		return ctrl.Result{}, readErr
 	}
-	if _, err := r.Dynamo.UpsertReadDesire(ctx, specsPrefix, readDesire); err != nil {
-		return ctrl.Result{}, fmt.Errorf("upsert read desire: %w", err)
-	}
-	if r.EventRouter != nil {
-		r.EventRouter.Register(readDocID, EventTarget{Channel: r.StatusEvents, Key: req.NamespacedName})
+	var applyEntries []DesireStatusEntry
+	for _, ur := range upsertResults {
+		if ur.err != nil {
+			return ctrl.Result{}, ur.err
+		}
+		applyEntries = append(applyEntries, ur.entry)
 	}
 
 	// Read status feedback from DynamoDB and update Cluster status.
@@ -359,7 +389,27 @@ func (r *ClusterReconciler) cleanupAndRemoveFinalizer(ctx context.Context, clust
 func (r *ClusterReconciler) updateStatusFromDynamo(ctx context.Context, cluster *hyperfleetv1alpha1.Cluster, statusPrefix, readDocID string, applyEntries []DesireStatusEntry) {
 	log := logf.FromContext(ctx)
 
-	readStatus, readErr := r.Dynamo.GetReadDesireStatus(ctx, statusPrefix, readDocID)
+	// Read HC status and check apply desire statuses in parallel.
+	var readStatus *dynamo.ReadDesireStatus
+	var readErr error
+	var syncedCond metav1.Condition
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		readStatus, readErr = r.Dynamo.GetReadDesireStatus(ctx, statusPrefix, readDocID)
+	}()
+
+	if len(applyEntries) > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			syncedCond = CheckApplyDesireStatuses(ctx, r.Dynamo, statusPrefix, applyEntries, cluster.Generation)
+		}()
+	}
+	wg.Wait()
+
 	if readErr != nil {
 		log.V(1).Info("ReadDesire status not yet available", "error", readErr)
 	}
@@ -390,9 +440,7 @@ func (r *ClusterReconciler) updateStatusFromDynamo(ctx context.Context, cluster 
 			return err
 		}
 
-		// Update Synced condition from apply desire statuses.
 		if len(applyEntries) > 0 {
-			syncedCond := CheckApplyDesireStatuses(ctx, r.Dynamo, statusPrefix, applyEntries, latest.Generation)
 			meta.SetStatusCondition(&latest.Status.Conditions, syncedCond)
 		}
 
@@ -462,6 +510,7 @@ func (r *ClusterReconciler) setPhase(ctx context.Context, cluster *hyperfleetv1a
 
 func (r *ClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	b := ctrl.NewControllerManagedBy(mgr).
+		WithOptions(controller.Options{MaxConcurrentReconciles: r.MaxConcurrentReconciles}).
 		For(&hyperfleetv1alpha1.Cluster{}).
 		Watches(&hyperfleetv1alpha1.Placement{}, handler.EnqueueRequestsFromMapFunc(
 			func(ctx context.Context, obj client.Object) []reconcile.Request {

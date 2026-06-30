@@ -66,6 +66,7 @@ func main() {
 	var awsRegion string
 	var fleetDBClusterName string
 	var baseDomain string
+	var maxConcurrentReconciles int
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -74,6 +75,7 @@ func main() {
 	flag.StringVar(&awsRegion, "aws-region", "", "AWS region for DynamoDB and EKS (required).")
 	flag.StringVar(&fleetDBClusterName, "fleet-db-cluster-name", "", "EKS cluster name for fleet-db (required).")
 	flag.StringVar(&baseDomain, "base-domain", "", "DNS base domain for hosted clusters (required).")
+	flag.IntVar(&maxConcurrentReconciles, "max-concurrent-reconciles", 10, "Maximum number of concurrent reconciles per controller.")
 
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
@@ -158,40 +160,44 @@ func main() {
 	manifestStatusEvents := make(chan event.GenericEvent, 256)
 
 	if err := (&controller.ClusterReconciler{
-		Client:         mgr.GetClient(),
-		Scheme:         mgr.GetScheme(),
-		Dynamo:         dynamoClient,
-		RegionalConfig: rcfg,
-		StatusEvents:   clusterStatusEvents,
-		EventRouter:    eventRouter,
+		Client:                  mgr.GetClient(),
+		Scheme:                  mgr.GetScheme(),
+		Dynamo:                  dynamoClient,
+		RegionalConfig:          rcfg,
+		StatusEvents:            clusterStatusEvents,
+		EventRouter:             eventRouter,
+		MaxConcurrentReconciles: maxConcurrentReconciles,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "cluster")
 		os.Exit(1)
 	}
 	if err := (&controller.NodePoolReconciler{
-		Client:       mgr.GetClient(),
-		Scheme:       mgr.GetScheme(),
-		Dynamo:       dynamoClient,
-		StatusEvents: nodePoolStatusEvents,
-		EventRouter:  eventRouter,
+		Client:                  mgr.GetClient(),
+		Scheme:                  mgr.GetScheme(),
+		Dynamo:                  dynamoClient,
+		StatusEvents:            nodePoolStatusEvents,
+		EventRouter:             eventRouter,
+		MaxConcurrentReconciles: maxConcurrentReconciles,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "nodepool")
 		os.Exit(1)
 	}
 	if err := (&controller.PlacementReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		MCConfig: mcLoader,
+		Client:                  mgr.GetClient(),
+		Scheme:                  mgr.GetScheme(),
+		MCConfig:                mcLoader,
+		MaxConcurrentReconciles: maxConcurrentReconciles,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "placement")
 		os.Exit(1)
 	}
 	if err := (&controller.ManifestReconciler{
-		Client:       mgr.GetClient(),
-		Scheme:       mgr.GetScheme(),
-		Dynamo:       dynamoClient,
-		StatusEvents: manifestStatusEvents,
-		EventRouter:  eventRouter,
+		Client:                  mgr.GetClient(),
+		Scheme:                  mgr.GetScheme(),
+		Dynamo:                  dynamoClient,
+		StatusEvents:            manifestStatusEvents,
+		EventRouter:             eventRouter,
+		MaxConcurrentReconciles: maxConcurrentReconciles,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "manifest")
 		os.Exit(1)

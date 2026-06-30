@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -30,6 +31,7 @@ import (
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -49,10 +51,11 @@ const (
 // that kube-applier-aws applies to the management cluster.
 type NodePoolReconciler struct {
 	client.Client
-	Scheme       *runtime.Scheme
-	Dynamo       dynamo.DesireClient
-	StatusEvents chan event.GenericEvent
-	EventRouter  *EventRouter
+	Scheme                  *runtime.Scheme
+	Dynamo                  dynamo.DesireClient
+	StatusEvents            chan event.GenericEvent
+	EventRouter             *EventRouter
+	MaxConcurrentReconciles int
 }
 
 // +kubebuilder:rbac:groups=hyperfleet.io,resources=nodepools,verbs=get;list;watch;create;update;patch;delete
@@ -127,17 +130,6 @@ func (r *NodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			KubeContent: content,
 		},
 	}
-	upsertResult, err := r.Dynamo.UpsertApplyDesire(ctx, specsPrefix, desire)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("upsert apply desire: %w", err)
-	}
-	applyEntry := DesireStatusEntry{DocID: docID, Resource: m.Resource, Name: m.Name, DesireUpdateTime: upsertResult.UpdateTime}
-
-	if r.EventRouter != nil {
-		r.EventRouter.Register(docID, EventTarget{Channel: r.StatusEvents, Key: req.NamespacedName})
-	}
-
-	// Upsert ReadDesire for NodePool status feedback.
 	readDesire := &dynamo.ReadDesire{
 		DynamoDBMetadata: dynamo.DynamoDBMetadata{DocumentID: readDocID},
 		Spec: dynamo.ReadDesireSpec{
@@ -152,10 +144,30 @@ func (r *NodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			},
 		},
 	}
-	if _, err := r.Dynamo.UpsertReadDesire(ctx, specsPrefix, readDesire); err != nil {
-		return ctrl.Result{}, fmt.Errorf("upsert read desire: %w", err)
+
+	var upsertResult dynamo.UpsertResult
+	var applyErr, readUpsertErr error
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		upsertResult, applyErr = r.Dynamo.UpsertApplyDesire(ctx, specsPrefix, desire)
+	}()
+	go func() {
+		defer wg.Done()
+		_, readUpsertErr = r.Dynamo.UpsertReadDesire(ctx, specsPrefix, readDesire)
+	}()
+	wg.Wait()
+	if applyErr != nil {
+		return ctrl.Result{}, fmt.Errorf("upsert apply desire: %w", applyErr)
 	}
+	if readUpsertErr != nil {
+		return ctrl.Result{}, fmt.Errorf("upsert read desire: %w", readUpsertErr)
+	}
+	applyEntry := DesireStatusEntry{DocID: docID, Resource: m.Resource, Name: m.Name, DesireUpdateTime: upsertResult.UpdateTime}
+
 	if r.EventRouter != nil {
+		r.EventRouter.Register(docID, EventTarget{Channel: r.StatusEvents, Key: req.NamespacedName})
 		r.EventRouter.Register(readDocID, EventTarget{Channel: r.StatusEvents, Key: req.NamespacedName})
 	}
 
@@ -257,9 +269,22 @@ func (r *NodePoolReconciler) reconcileDelete(ctx context.Context, nodePool *hype
 func (r *NodePoolReconciler) updateStatusFromDynamo(ctx context.Context, nodePool *hyperfleetv1alpha1.NodePool, statusPrefix string, applyEntry DesireStatusEntry, readDocID string) {
 	log := logf.FromContext(ctx)
 
-	syncedCond := CheckApplyDesireStatuses(ctx, r.Dynamo, statusPrefix, []DesireStatusEntry{applyEntry}, nodePool.Generation)
+	var syncedCond metav1.Condition
+	var readStatus *dynamo.ReadDesireStatus
+	var readErr error
+	var wg sync.WaitGroup
 
-	readStatus, readErr := r.Dynamo.GetReadDesireStatus(ctx, statusPrefix, readDocID)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		syncedCond = CheckApplyDesireStatuses(ctx, r.Dynamo, statusPrefix, []DesireStatusEntry{applyEntry}, nodePool.Generation)
+	}()
+	go func() {
+		defer wg.Done()
+		readStatus, readErr = r.Dynamo.GetReadDesireStatus(ctx, statusPrefix, readDocID)
+	}()
+	wg.Wait()
+
 	if readErr != nil {
 		log.V(1).Info("ReadDesire status not yet available", "error", readErr)
 	}
@@ -343,6 +368,7 @@ func (r *NodePoolReconciler) setSyncedCondition(ctx context.Context, nodePool *h
 
 func (r *NodePoolReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
+		WithOptions(controller.Options{MaxConcurrentReconciles: r.MaxConcurrentReconciles}).
 		For(&hyperfleetv1alpha1.NodePool{}).
 		WatchesRawSource(source.Channel(r.StatusEvents, &handler.EnqueueRequestForObject{})).
 		Named("nodepool").

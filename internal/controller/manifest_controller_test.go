@@ -109,18 +109,18 @@ var _ = Describe("Manifest Controller", func() {
 			// 4 resources → 4 ApplyDesires (SA, Role, RoleBinding, Job).
 			Expect(fd.applyCount).To(Equal(4))
 
-			Expect(fd.applies[0].Spec.TargetItem.Resource).To(Equal("serviceaccounts"))
-			Expect(fd.applies[0].Spec.TargetItem.Name).To(Equal("zoa-runner"))
-			Expect(fd.applies[0].Spec.TargetItem.Version).To(Equal("v1"))
+			sa := fd.findApply("serviceaccounts", "zoa-runner")
+			Expect(sa).NotTo(BeNil())
+			Expect(sa.Spec.TargetItem.Version).To(Equal("v1"))
 
-			Expect(fd.applies[1].Spec.TargetItem.Resource).To(Equal("roles"))
-			Expect(fd.applies[1].Spec.TargetItem.Name).To(Equal("zoa-runner"))
-			Expect(fd.applies[1].Spec.TargetItem.Version).To(Equal("v1"))
-			Expect(fd.applies[1].Spec.TargetItem.Group).To(Equal("rbac.authorization.k8s.io"))
+			role := fd.findApply("roles", "zoa-runner")
+			Expect(role).NotTo(BeNil())
+			Expect(role.Spec.TargetItem.Version).To(Equal("v1"))
+			Expect(role.Spec.TargetItem.Group).To(Equal("rbac.authorization.k8s.io"))
 
-			Expect(fd.applies[3].Spec.TargetItem.Resource).To(Equal("jobs"))
-			Expect(fd.applies[3].Spec.TargetItem.Name).To(Equal("collect-logs-abc123"))
-			Expect(fd.applies[3].Spec.TargetItem.Namespace).To(Equal("zoa-actions"))
+			job := fd.findApply("jobs", "collect-logs-abc123")
+			Expect(job).NotTo(BeNil())
+			Expect(job.Spec.TargetItem.Namespace).To(Equal("zoa-actions"))
 
 			// Verify KubeContent is the raw JSON from spec.
 			for _, a := range fd.applies {
@@ -195,8 +195,12 @@ var _ = Describe("Manifest Controller", func() {
 			Expect(fdB.applyCount).To(Equal(4))
 
 			// The document IDs for the same resource (SA "zoa-runner") must differ between CRs.
-			docIDA := fdA.applies[0].DynamoDBMetadata.DocumentID
-			docIDB := fdB.applies[0].DynamoDBMetadata.DocumentID
+			saA := fdA.findApply("serviceaccounts", "zoa-runner")
+			saB := fdB.findApply("serviceaccounts", "zoa-runner")
+			Expect(saA).NotTo(BeNil())
+			Expect(saB).NotTo(BeNil())
+			docIDA := saA.DynamoDBMetadata.DocumentID
+			docIDB := saB.DynamoDBMetadata.DocumentID
 			Expect(docIDA).NotTo(Equal(docIDB), "document IDs should differ between CRs")
 
 			expectedA := dynamo.NewDocumentID("hyperfleet-manifest/"+testNS+"/"+manifestName, "", "v1", "serviceaccounts", "zoa-actions", "zoa-runner")

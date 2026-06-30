@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -34,25 +35,39 @@ func CheckApplyDesireStatuses(
 	generation int64,
 ) metav1.Condition {
 	total := len(entries)
+
+	type result struct {
+		status *dynamo.ApplyDesireStatus
+		err    error
+	}
+	results := make([]result, total)
+	var wg sync.WaitGroup
+	for i, e := range entries {
+		wg.Add(1)
+		go func(idx int, docID string) {
+			defer wg.Done()
+			s, err := dc.GetApplyDesireStatus(ctx, statusPrefix, docID)
+			results[idx] = result{status: s, err: err}
+		}(i, e.DocID)
+	}
+	wg.Wait()
+
 	synced := 0
 	var failedMessages []string
-
-	for _, e := range entries {
-		status, err := dc.GetApplyDesireStatus(ctx, statusPrefix, e.DocID)
-		if err != nil {
-			if !errors.Is(err, dynamo.ErrNotFound) {
-				failedMessages = append(failedMessages, fmt.Sprintf("%s/%s: %v", e.Resource, e.Name, err))
+	for i, e := range entries {
+		r := results[i]
+		if r.err != nil {
+			if !errors.Is(r.err, dynamo.ErrNotFound) {
+				failedMessages = append(failedMessages, fmt.Sprintf("%s/%s: %v", e.Resource, e.Name, r.err))
 			}
 			continue
 		}
 
-		// Skip statuses that predate the current spec write — kube-applier
-		// hasn't processed the latest spec revision yet.
-		if !e.DesireUpdateTime.IsZero() && status.ObservedDesireUpdateTime.Before(e.DesireUpdateTime) {
+		if !e.DesireUpdateTime.IsZero() && r.status.ObservedDesireUpdateTime.Before(e.DesireUpdateTime) {
 			continue
 		}
 
-		cond := meta.FindStatusCondition(status.Conditions, dynamo.DesireConditionSuccessful)
+		cond := meta.FindStatusCondition(r.status.Conditions, dynamo.DesireConditionSuccessful)
 		if cond == nil {
 			continue
 		}
@@ -103,20 +118,37 @@ func CheckDeleteDesireStatuses(
 	generation int64,
 ) metav1.Condition {
 	total := len(entries)
+
+	type result struct {
+		status *dynamo.DeleteDesireStatus
+		err    error
+	}
+	results := make([]result, total)
+	var wg sync.WaitGroup
+	for i, e := range entries {
+		wg.Add(1)
+		go func(idx int, docID string) {
+			defer wg.Done()
+			s, err := dc.GetDeleteDesireStatus(ctx, statusPrefix, docID)
+			results[idx] = result{status: s, err: err}
+		}(i, e.DocID)
+	}
+	wg.Wait()
+
 	deleted := 0
 	var errorMessages []string
 	var pendingMessages []string
 
-	for _, e := range entries {
-		status, err := dc.GetDeleteDesireStatus(ctx, statusPrefix, e.DocID)
-		if err != nil {
-			if !errors.Is(err, dynamo.ErrNotFound) {
-				errorMessages = append(errorMessages, fmt.Sprintf("%s/%s: %v", e.Resource, e.Name, err))
+	for i, e := range entries {
+		r := results[i]
+		if r.err != nil {
+			if !errors.Is(r.err, dynamo.ErrNotFound) {
+				errorMessages = append(errorMessages, fmt.Sprintf("%s/%s: %v", e.Resource, e.Name, r.err))
 			}
 			continue
 		}
 
-		cond := meta.FindStatusCondition(status.Conditions, dynamo.DesireConditionSuccessful)
+		cond := meta.FindStatusCondition(r.status.Conditions, dynamo.DesireConditionSuccessful)
 		if cond == nil {
 			continue
 		}
