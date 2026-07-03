@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -72,7 +73,7 @@ func NewFleetManager(ctx context.Context, opts Options) (*FleetManager, error) {
 
 	stores := make(map[string]*InformerStore)
 	for _, kind := range RegisteredKinds() {
-		stores[kind] = NewInformerStore(kind)
+		stores[kind] = NewInformerStore(kind, logger)
 	}
 
 	watcher := NewWatcher(pool, watchCfg, logger)
@@ -129,8 +130,33 @@ func (fm *FleetManager) Start(ctx context.Context) error {
 		errCh <- fm.Watcher.Run(ctx)
 	}()
 
-	if !fm.Cache.WaitForCacheSync(ctx) {
-		return fmt.Errorf("cache sync failed")
+	// Wait for cache sync, but also check if the watcher failed (e.g. initialList error).
+	for {
+		select {
+		case err := <-errCh:
+			return fmt.Errorf("watcher failed: %w", err)
+		default:
+		}
+
+		allSynced := true
+		for _, store := range fm.Stores {
+			if !store.HasSynced() {
+				allSynced = false
+				break
+			}
+		}
+		if allSynced {
+			fm.Cache.synced.Store(true)
+			break
+		}
+
+		select {
+		case err := <-errCh:
+			return fmt.Errorf("watcher failed: %w", err)
+		case <-ctx.Done():
+			return fmt.Errorf("cache sync cancelled: %w", ctx.Err())
+		case <-time.After(50 * time.Millisecond):
+		}
 	}
 
 	fm.Logger.Info("FleetStore cache synced, starting manager")

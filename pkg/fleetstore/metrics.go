@@ -54,13 +54,13 @@ var (
 		Buckets: prometheus.DefBuckets,
 	})
 
+	ListenReconnects = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "fleetstore_listen_reconnects_total",
+		Help: "LISTEN connection reconnects.",
+	})
+
 	FreshnessFloorHits = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "fleetstore_freshness_floor_hits_total",
 		Help: "Times a reconcile was deferred by the freshness floor. Alert > 0.",
-	})
-
-	ListenReconnects = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "fleetstore_listen_reconnects_total",
-		Help: "LISTEN connection reconnections.",
 	})
 )

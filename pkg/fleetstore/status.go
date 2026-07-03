@@ -45,7 +45,9 @@ func (sw *StatusWriter) Update(ctx context.Context, obj client.Object, opts ...c
 	if err != nil {
 		return err
 	}
+
 	if jsonEqual(current.Status, newStatus) {
+		StatusNoop.Inc()
 		return nil
 	}
 
@@ -63,7 +65,7 @@ func (sw *StatusWriter) Update(ctx context.Context, obj client.Object, opts ...c
 		return sw.disambiguateStatusZero(ctx, kind, ns, obj.GetName())
 	}
 
-	return nil
+	return sw.client.directGet(ctx, client.ObjectKey{Namespace: obj.GetNamespace(), Name: obj.GetName()}, obj)
 }
 
 // Patch implements Status().Patch via read-modify-write.
@@ -128,6 +130,7 @@ func (sw *StatusWriter) disambiguateStatusZero(ctx context.Context, kind, ns, na
 		return notFound(kind, name)
 	}
 	// Row is live, trigger suppressed — it was a no-op. Success.
+	StatusNoop.Inc()
 	return nil
 }
 

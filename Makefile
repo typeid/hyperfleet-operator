@@ -59,14 +59,19 @@ vet: ## Run go vet against code.
 	go vet ./...
 
 .PHONY: test
-test: manifests generate fmt vet setup-envtest ## Run tests.
-	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
+test: manifests generate fmt vet setup-envtest ## Run unit tests.
+	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" go test ./... -coverprofile cover.out
 
-.PHONY: test-e2e
-test-e2e: manifests generate fmt vet setup-envtest ## Run e2e tests (envtest + containerized DynamoDB Local).
+.PHONY: test-store
+test-store: manifests generate fmt vet ## Run FleetStore tests against a real Postgres container.
+	CONTAINER_TOOL=$(CONTAINER_TOOL) \
+		go test -tags=fleetstore ./pkg/fleetstore/... -v -timeout 5m
+
+.PHONY: test-integration
+test-integration: manifests generate fmt vet setup-envtest ## Run all tests including integration (containerized Postgres + envtest + DynamoDB Local).
 	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" \
 		CONTAINER_TOOL=$(CONTAINER_TOOL) \
-		go test -tags=e2e ./test/e2e/ -v -ginkgo.v -timeout 5m
+		go test -tags=integration,fleetstore ./... -v -timeout 5m
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter

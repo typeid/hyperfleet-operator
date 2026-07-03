@@ -28,29 +28,29 @@ type Event struct {
 	Cursor int64
 }
 
-// WatchConfig holds configuration for the poll loop.
+// WatchConfig holds configuration for the watcher.
 type WatchConfig struct {
-	PollIdle time.Duration
-	PollMin  time.Duration
+	PollIdle time.Duration // fallback poll interval when no NOTIFY arrives
 }
 
 // DefaultWatchConfig returns the default watch configuration.
 func DefaultWatchConfig() WatchConfig {
 	return WatchConfig{
 		PollIdle: 5 * time.Second,
-		PollMin:  50 * time.Millisecond,
 	}
 }
 
-// Watcher runs the seq-poll + LISTEN doorbell loop per §7.
+// Watcher runs a LISTEN/NOTIFY-driven poll loop to keep InformerStores up to
+// date. A Postgres NOTIFY on channel "fleetstore" triggers an immediate poll;
+// the PollIdle timer acts as a fallback in case a notification is missed.
 type Watcher struct {
-	pool    *pgxpool.Pool
-	cfg     WatchConfig
-	logger  *slog.Logger
+	pool   *pgxpool.Pool
+	cfg    WatchConfig
+	logger *slog.Logger
 
-	mu      sync.RWMutex
-	cursor  int64
-	stores  map[string]*InformerStore
+	mu     sync.RWMutex
+	cursor int64
+	stores map[string]*InformerStore
 
 	doorbell chan struct{}
 }
@@ -73,7 +73,8 @@ func (w *Watcher) RegisterStore(kind string, store *InformerStore) {
 	w.stores[kind] = store
 }
 
-// Run executes the LIST-then-WATCH startup and poll loop.
+// Run executes the LIST-then-WATCH startup, starts the LISTEN loop, and
+// enters the poll loop.
 func (w *Watcher) Run(ctx context.Context) error {
 	if err := w.initialList(ctx); err != nil {
 		return fmt.Errorf("initial list: %w", err)
@@ -84,7 +85,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 	return nil
 }
 
-// initialList implements §7.2 — LIST-then-WATCH startup.
+// initialList implements LIST-then-WATCH startup.
 func (w *Watcher) initialList(ctx context.Context) error {
 	rows, err := w.pool.Query(ctx,
 		`SELECT kind, namespace, name, uid, generation,
@@ -136,14 +137,16 @@ func (w *Watcher) initialList(ctx context.Context) error {
 	return nil
 }
 
-// listenLoop runs the LISTEN doorbell on a dedicated connection.
+// listenLoop maintains a LISTEN connection and rings the doorbell on each
+// notification. It reconnects automatically on error.
 func (w *Watcher) listenLoop(ctx context.Context) {
-	for {
+	for ctx.Err() == nil {
 		if err := w.listenOnce(ctx); err != nil {
 			if ctx.Err() != nil {
 				return
 			}
-			w.logger.Warn("LISTEN connection error, reconnecting", "error", err)
+			w.logger.Warn("LISTEN connection lost, reconnecting", "error", err)
+			ListenReconnects.Inc()
 			time.Sleep(time.Second)
 		}
 	}
@@ -152,12 +155,11 @@ func (w *Watcher) listenLoop(ctx context.Context) {
 func (w *Watcher) listenOnce(ctx context.Context) error {
 	conn, err := w.pool.Acquire(ctx)
 	if err != nil {
-		return fmt.Errorf("acquire listen conn: %w", err)
+		return fmt.Errorf("acquire conn: %w", err)
 	}
 	defer conn.Release()
 
-	_, err = conn.Exec(ctx, "LISTEN fleetstore")
-	if err != nil {
+	if _, err := conn.Exec(ctx, "LISTEN fleetstore"); err != nil {
 		return fmt.Errorf("LISTEN: %w", err)
 	}
 
@@ -166,7 +168,7 @@ func (w *Watcher) listenOnce(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		// Ring the doorbell (non-blocking).
+		// Non-blocking send: collapse multiple notifications into one poll.
 		select {
 		case w.doorbell <- struct{}{}:
 		default:
@@ -174,19 +176,17 @@ func (w *Watcher) listenOnce(ctx context.Context) error {
 	}
 }
 
-// pollLoop implements §7.3 — poll on doorbell OR pollIdle timeout.
+// pollLoop waits for either a doorbell ring or the fallback timer, then polls.
 func (w *Watcher) pollLoop(ctx context.Context) {
-	timer := time.NewTimer(w.cfg.PollIdle)
-	defer timer.Stop()
+	ticker := time.NewTicker(w.cfg.PollIdle)
+	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-w.doorbell:
-			// Debounce: wait pollMin to batch write bursts.
-			time.Sleep(w.cfg.PollMin)
-		case <-timer.C:
+		case <-ticker.C:
 		}
 
 		if err := w.poll(ctx); err != nil {
@@ -195,12 +195,12 @@ func (w *Watcher) pollLoop(ctx context.Context) {
 			}
 			w.logger.Warn("poll error, retrying", "error", err)
 		}
-
-		timer.Reset(w.cfg.PollIdle)
 	}
 }
 
 func (w *Watcher) poll(ctx context.Context) error {
+	start := time.Now()
+
 	w.mu.RLock()
 	cursor := w.cursor
 	w.mu.RUnlock()
@@ -218,6 +218,7 @@ func (w *Watcher) poll(ctx context.Context) error {
 
 	var maxSeq int64
 	var count int
+	var latestUpdatedAt time.Time
 	for rows.Next() {
 		row, err := scanResourceRow(rows)
 		if err != nil {
@@ -225,8 +226,11 @@ func (w *Watcher) poll(ctx context.Context) error {
 		}
 		if row.Seq > maxSeq {
 			maxSeq = row.Seq
+			latestUpdatedAt = row.UpdatedAt
 		}
 		count++
+
+		WatchEventLag.Observe(time.Since(row.UpdatedAt).Seconds())
 
 		w.mu.RLock()
 		store, ok := w.stores[row.Kind]
@@ -239,7 +243,11 @@ func (w *Watcher) poll(ctx context.Context) error {
 		return fmt.Errorf("rows: %w", err)
 	}
 
+	PollLatency.Observe(time.Since(start).Seconds())
+	PollRows.Add(float64(count))
+
 	if count > 0 {
+		CursorLag.Set(time.Since(latestUpdatedAt).Seconds())
 		w.mu.Lock()
 		w.cursor = maxSeq
 		w.mu.Unlock()

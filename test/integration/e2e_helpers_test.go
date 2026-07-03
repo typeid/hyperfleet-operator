@@ -1,4 +1,4 @@
-//go:build e2e
+//go:build integration
 
 package e2e
 
@@ -16,9 +16,15 @@ import (
 )
 
 var _ = BeforeEach(func() {
+	purgeFleetstore()
 	purgeDynamoTables()
 	dynamoCli.ResetCache()
 })
+
+func purgeFleetstore() {
+	_, err := pool.Exec(ctx, "DELETE FROM resources WHERE kind != 'ManagementCluster'")
+	Expect(err).NotTo(HaveOccurred())
+}
 
 func scanTable(tableName string) []map[string]dynamodbtypes.AttributeValue {
 	out, err := dynamoDBCli.Scan(ctx, &dynamodb.ScanInput{

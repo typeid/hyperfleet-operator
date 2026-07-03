@@ -1,4 +1,4 @@
-//go:build e2e
+//go:build integration
 
 package e2e
 
@@ -9,6 +9,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	hyperfleetv1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
@@ -101,20 +102,25 @@ var _ = Describe("Manifest lifecycle", func() {
 		hfm := newE2EManifest(manifestName)
 		Expect(k8sClient.Create(ctx, hfm)).To(Succeed())
 
-		By("waiting for initial ApplyDesires")
+		By("waiting for initial reconcile to complete")
 		specsTable := mc + "-specs-applydesires"
 		Eventually(func(g Gomega) {
-			items := scanTable(specsTable)
-			g.Expect(len(items)).To(BeNumerically(">=", 4))
+			var h hyperfleetv1alpha1.Manifest
+			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &h)).To(Succeed())
+			g.Expect(h.Status.Phase).To(Equal(hyperfleetv1alpha1.ManifestPhaseApplied))
 		}).Should(Succeed())
 
 		By("updating Job image")
-		var toUpdate hyperfleetv1alpha1.Manifest
-		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &toUpdate)).To(Succeed())
-		toUpdate.Spec.Resources[3].Content = runtime.RawExtension{
-			Raw: []byte(`{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"e2e-job-abc123","namespace":"e2e-actions"},"spec":{"template":{"spec":{"serviceAccountName":"e2e-runner","containers":[{"name":"runner","image":"registry.example.com/e2e-runner:v2"}],"restartPolicy":"Never"}}}}`),
-		}
-		Expect(k8sClient.Update(ctx, &toUpdate)).To(Succeed())
+		Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			var toUpdate hyperfleetv1alpha1.Manifest
+			if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &toUpdate); err != nil {
+				return err
+			}
+			toUpdate.Spec.Resources[3].Content = runtime.RawExtension{
+				Raw: []byte(`{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"e2e-job-abc123","namespace":"e2e-actions"},"spec":{"template":{"spec":{"serviceAccountName":"e2e-runner","containers":[{"name":"runner","image":"registry.example.com/e2e-runner:v2"}],"restartPolicy":"Never"}}}}`),
+			}
+			return k8sClient.Update(ctx, &toUpdate)
+		})).To(Succeed())
 
 		By("verifying updated content in DynamoDB")
 		Eventually(func(g Gomega) {

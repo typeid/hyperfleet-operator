@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -58,6 +59,9 @@ func (c *Client) List(ctx context.Context, list client.ObjectList, opts ...clien
 // Create implements the POST verb per §6.
 // Uses savepoint to prevent phantom global_seq bumps on AlreadyExists.
 func (c *Client) Create(ctx context.Context, obj client.Object, opts ...client.CreateOption) error {
+	start := time.Now()
+	defer func() { WriteLatency.WithLabelValues("create").Observe(time.Since(start).Seconds()) }()
+
 	row, err := Encode(obj)
 	if err != nil {
 		return fmt.Errorf("encode: %w", err)
@@ -136,6 +140,9 @@ func (c *Client) Create(ctx context.Context, obj client.Object, opts ...client.C
 
 // Update implements the UPDATE verb per §6 — CAS on seq (resourceVersion).
 func (c *Client) Update(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
+	start := time.Now()
+	defer func() { WriteLatency.WithLabelValues("update").Observe(time.Since(start).Seconds()) }()
+
 	row, err := Encode(obj)
 	if err != nil {
 		return fmt.Errorf("encode: %w", err)
@@ -148,7 +155,7 @@ func (c *Client) Update(ctx context.Context, obj client.Object, opts ...client.U
 
 	// Finalization completion: deleting object with empty finalizers → tombstone.
 	if obj.GetDeletionTimestamp() != nil && len(obj.GetFinalizers()) == 0 {
-		return c.tombstone(ctx, row.Kind, row.Namespace, row.Name)
+		return c.tombstoneWithCAS(ctx, row.Kind, row.Namespace, row.Name, expectedSeq)
 	}
 
 	tag, err := c.pool.Exec(ctx, `
@@ -168,6 +175,18 @@ func (c *Client) Update(ctx context.Context, obj client.Object, opts ...client.U
 	}
 
 	if tag.RowsAffected() == 0 {
+		// Distinguish trigger-suppressed no-op from real CAS conflict:
+		// if seq still matches, the trigger suppressed an identical write.
+		var currentSeq int64
+		err := c.pool.QueryRow(ctx, `
+			SELECT seq FROM resources
+			WHERE kind=$1 AND namespace=$2 AND name=$3 AND deleted_at IS NULL`,
+			row.Kind, row.Namespace, row.Name,
+		).Scan(&currentSeq)
+		if err == nil && currentSeq == expectedSeq {
+			return nil
+		}
+		WriteConflicts.WithLabelValues("update").Inc()
 		return c.disambiguateUpdateFailure(ctx, row.Kind, row.Namespace, row.Name)
 	}
 
@@ -176,6 +195,9 @@ func (c *Client) Update(ctx context.Context, obj client.Object, opts ...client.U
 
 // Delete implements two-phase delete per §6.
 func (c *Client) Delete(ctx context.Context, obj client.Object, opts ...client.DeleteOption) error {
+	start := time.Now()
+	defer func() { WriteLatency.WithLabelValues("delete").Observe(time.Since(start).Seconds()) }()
+
 	kind, err := KindFor(obj)
 	if err != nil {
 		return err
@@ -196,25 +218,28 @@ func (c *Client) Delete(ctx context.Context, obj client.Object, opts ...client.D
 		return fmt.Errorf("read for delete: %w", err)
 	}
 
-	if len(current.Finalizers) > 0 && current.DeletionTimestamp == nil {
-		// Phase 1: set deletion_timestamp.
-		tag, err := c.pool.Exec(ctx, `
-			UPDATE resources SET deletion_timestamp = now()
-			WHERE kind=$1 AND namespace=$2 AND name=$3
-				AND deletion_timestamp IS NULL AND deleted_at IS NULL`,
-			kind, ns, name,
-		)
-		if err != nil {
-			return fmt.Errorf("delete phase 1: %w", err)
+	if len(current.Finalizers) > 0 {
+		if current.DeletionTimestamp == nil {
+			// Phase 1: set deletion_timestamp.
+			tag, err := c.pool.Exec(ctx, `
+				UPDATE resources SET deletion_timestamp = now()
+				WHERE kind=$1 AND namespace=$2 AND name=$3
+					AND deletion_timestamp IS NULL AND deleted_at IS NULL`,
+				kind, ns, name,
+			)
+			if err != nil {
+				return fmt.Errorf("delete phase 1: %w", err)
+			}
+			if tag.RowsAffected() == 0 {
+				// Already has deletion_timestamp or already tombstoned — idempotent success.
+				return nil
+			}
 		}
-		if tag.RowsAffected() == 0 {
-			// Already has deletion_timestamp or already tombstoned — idempotent success.
-			return nil
-		}
+		// Finalizers still present — wait for controllers to clear them.
 		return nil
 	}
 
-	// Phase 2: tombstone (no finalizers, or already deleting with cleared finalizers).
+	// Phase 2: tombstone (no finalizers).
 	return c.tombstone(ctx, kind, ns, name)
 }
 
@@ -231,6 +256,24 @@ func (c *Client) tombstone(ctx context.Context, kind, ns, name string) error {
 	}
 	if tag.RowsAffected() == 0 {
 		return notFound(kind, name)
+	}
+	return nil
+}
+
+func (c *Client) tombstoneWithCAS(ctx context.Context, kind, ns, name string, expectedSeq int64) error {
+	tag, err := c.pool.Exec(ctx, `
+		UPDATE resources SET
+			deleted_at = now(),
+			deletion_timestamp = COALESCE(deletion_timestamp, now())
+		WHERE kind=$1 AND namespace=$2 AND name=$3
+			AND seq = $4 AND deleted_at IS NULL`,
+		kind, ns, name, expectedSeq,
+	)
+	if err != nil {
+		return fmt.Errorf("tombstone: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return c.disambiguateUpdateFailure(ctx, kind, ns, name)
 	}
 	return nil
 }

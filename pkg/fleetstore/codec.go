@@ -14,30 +14,29 @@ import (
 
 // ResourceRow maps 1:1 to the resources table columns.
 type ResourceRow struct {
-	Kind      string
-	Namespace string
-	Name      string
-	UID       types.UID
+	Kind       string
+	Namespace  string
+	Name       string
+	UID        types.UID
 	Generation int64
 
-	Labels      json.RawMessage
-	Annotations json.RawMessage
-	OwnerRefs   json.RawMessage
-	Finalizers  []string
-	Spec        json.RawMessage
-	Status      json.RawMessage
-	CreatedAt   time.Time
+	Labels            json.RawMessage
+	Annotations       json.RawMessage
+	OwnerRefs         json.RawMessage
+	Finalizers        []string
+	Spec              json.RawMessage
+	Status            json.RawMessage
+	CreatedAt         time.Time
 	DeletionTimestamp *time.Time
 
 	// Store metadata — stripped on decode, managed by trigger/store.
-	Seq            int64
-	AWSAccountID   *string
-	UpdatedAt      time.Time
-	DeletedAt      *time.Time
+	Seq          int64
+	AWSAccountID *string
+	UpdatedAt    time.Time
+	DeletedAt    *time.Time
 }
 
 // Encode converts a client.Object into a ResourceRow.
-// The caller must set AWSAccountID on the returned row for non-Cluster namespaced kinds.
 func Encode(obj client.Object) (*ResourceRow, error) {
 	kind, err := KindFor(obj)
 	if err != nil {
@@ -79,28 +78,29 @@ func Encode(obj client.Object) (*ResourceRow, error) {
 	}
 
 	row := &ResourceRow{
-		Kind:       kind,
-		Namespace:  ns,
-		Name:       obj.GetName(),
-		UID:        obj.GetUID(),
-		Generation: obj.GetGeneration(),
-		Labels:     labels,
+		Kind:        kind,
+		Namespace:   ns,
+		Name:        obj.GetName(),
+		UID:         obj.GetUID(),
+		Generation:  obj.GetGeneration(),
+		Labels:      labels,
 		Annotations: annotations,
-		OwnerRefs:  ownerRefs,
-		Finalizers: obj.GetFinalizers(),
-		Spec:       spec,
-		Status:     status,
+		OwnerRefs:   ownerRefs,
+		Finalizers:  obj.GetFinalizers(),
+		Spec:        spec,
+		Status:      status,
 	}
 
 	if row.Finalizers == nil {
 		row.Finalizers = []string{}
 	}
 
-	// Extract aws_account_id for Cluster kind.
 	if kind == "Cluster" {
 		if c, ok := obj.(*v1alpha1.Cluster); ok {
 			row.AWSAccountID = &c.Spec.AccountID
 		}
+	} else if !IsGlobal(kind) && ns != "" {
+		row.AWSAccountID = &ns
 	}
 
 	return row, nil

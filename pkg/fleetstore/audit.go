@@ -79,11 +79,16 @@ func (a *Auditor) runAudit(ctx context.Context) error {
 	}
 	defer rows.Close()
 
+	var auditMaxSeq int64
 	listedKeys := make(map[string]map[string]bool) // kind → set of keys
 	for rows.Next() {
 		row, err := scanResourceRow(rows)
 		if err != nil {
 			return fmt.Errorf("scan: %w", err)
+		}
+
+		if row.Seq > auditMaxSeq {
+			auditMaxSeq = row.Seq
 		}
 
 		if _, ok := listedKeys[row.Kind]; !ok {
@@ -102,14 +107,16 @@ func (a *Auditor) runAudit(ctx context.Context) error {
 		return fmt.Errorf("rows: %w", err)
 	}
 
-	// Rule 1: detect store keys absent from table.
+	// Rule 1: detect store keys absent from table, but only if their seq
+	// is within the audit snapshot. Keys with seq > auditMaxSeq were added
+	// by the poll loop after the audit query started and must not be evicted.
 	var corrections int
 	for kind, store := range a.stores {
 		keys, ok := listedKeys[kind]
 		if !ok {
 			keys = make(map[string]bool)
 		}
-		missing := store.AuditDiff(keys)
+		missing := store.AuditDiff(keys, auditMaxSeq)
 		for _, key := range missing {
 			store.RemoveKey(key)
 			corrections++

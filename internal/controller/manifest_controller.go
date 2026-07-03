@@ -25,12 +25,10 @@ import (
 	"sync"
 	"time"
 
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -83,9 +81,6 @@ func (r *ManifestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	if !controllerutil.ContainsFinalizer(&hfm, manifestFinalizer) {
 		controllerutil.AddFinalizer(&hfm, manifestFinalizer)
 		if err := r.Update(ctx, &hfm); err != nil {
-			if apierrors.IsNotFound(err) {
-				return ctrl.Result{}, nil
-			}
 			return ctrl.Result{}, fmt.Errorf("add finalizer: %w", err)
 		}
 		return ctrl.Result{Requeue: true}, nil
@@ -226,33 +221,29 @@ func (r *ManifestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		}
 	}
 
-	// Poll ReadDesire status and update resourceStatuses.
+	// Poll ReadDesire status to collect resourceStatuses.
 	statusPrefix := dynamo.StatusPrefix(mc)
+	var resourceStatuses []hyperfleetv1alpha1.ResourceStatus
 	if hasWatched {
-		r.updateResourceStatuses(ctx, &hfm, statusPrefix, scopedTaskKey)
+		resourceStatuses = r.collectResourceStatuses(ctx, &hfm, statusPrefix, scopedTaskKey)
 	}
 
-	// Set Synced condition and phase based on apply desire statuses.
+	// Set Synced condition, phase, and resourceStatuses in a single status write
+	// to avoid a stale-cache read between two writes erasing resourceStatuses.
 	syncedCond := CheckApplyDesireStatuses(ctx, r.Dynamo, statusPrefix, applyEntries, hfm.Generation)
 
-	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		var latest hyperfleetv1alpha1.Manifest
-		if err := r.Get(ctx, client.ObjectKeyFromObject(&hfm), &latest); err != nil {
-			if apierrors.IsNotFound(err) {
-				return nil
-			}
-			return err
-		}
-		meta.SetStatusCondition(&latest.Status.Conditions, syncedCond)
-		if syncedCond.Status == metav1.ConditionTrue {
-			latest.Status.Phase = hyperfleetv1alpha1.ManifestPhaseApplied
-		} else {
-			latest.Status.Phase = hyperfleetv1alpha1.ManifestPhaseSyncing
-		}
-		latest.Status.AppliedResources = int32(len(hfm.Spec.Resources))
-		latest.Status.ObservedGeneration = latest.Generation
-		return r.Status().Update(ctx, &latest)
-	}); err != nil {
+	meta.SetStatusCondition(&hfm.Status.Conditions, syncedCond)
+	if syncedCond.Status == metav1.ConditionTrue {
+		hfm.Status.Phase = hyperfleetv1alpha1.ManifestPhaseApplied
+	} else {
+		hfm.Status.Phase = hyperfleetv1alpha1.ManifestPhaseSyncing
+	}
+	hfm.Status.AppliedResources = int32(len(hfm.Spec.Resources))
+	hfm.Status.ObservedGeneration = hfm.Generation
+	if len(resourceStatuses) > 0 {
+		hfm.Status.ResourceStatuses = resourceStatuses
+	}
+	if err := r.Status().Update(ctx, &hfm); err != nil {
 		return ctrl.Result{}, fmt.Errorf("update status: %w", err)
 	}
 
@@ -342,7 +333,11 @@ func (r *ManifestReconciler) reconcileDelete(ctx context.Context, hfm *hyperflee
 		if !res.Watch {
 			continue
 		}
-		group, version, name, namespace, _ := extractResourceMeta(res.Content.Raw)
+		group, version, name, namespace, err := extractResourceMeta(res.Content.Raw)
+		if err != nil {
+			log.Error(err, "failed to extract metadata for ReadDesire cleanup, skipping", "resource", res.Resource)
+			continue
+		}
 		readDocID := dynamo.NewDocumentID(readTaskKey, group, version, res.Resource, namespace, name)
 		if r.EventRouter != nil {
 			r.EventRouter.Deregister(readDocID)
@@ -352,18 +347,8 @@ func (r *ManifestReconciler) reconcileDelete(ctx context.Context, hfm *hyperflee
 		}
 	}
 
-	// Remove finalizer with RetryOnConflict to handle stale resourceVersion.
-	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		var latest hyperfleetv1alpha1.Manifest
-		if err := r.Get(ctx, client.ObjectKeyFromObject(hfm), &latest); err != nil {
-			return client.IgnoreNotFound(err)
-		}
-		if !controllerutil.ContainsFinalizer(&latest, manifestFinalizer) {
-			return nil
-		}
-		controllerutil.RemoveFinalizer(&latest, manifestFinalizer)
-		return r.Update(ctx, &latest)
-	}); err != nil {
+	controllerutil.RemoveFinalizer(hfm, manifestFinalizer)
+	if err := r.Update(ctx, hfm); err != nil {
 		return ctrl.Result{}, fmt.Errorf("remove finalizer: %w", err)
 	}
 
@@ -411,7 +396,7 @@ func (r *ManifestReconciler) cleanupOrphanedDesires(ctx context.Context, hfm *hy
 	}
 }
 
-func (r *ManifestReconciler) updateResourceStatuses(ctx context.Context, hfm *hyperfleetv1alpha1.Manifest, statusPrefix, scopedTaskKey string) {
+func (r *ManifestReconciler) collectResourceStatuses(ctx context.Context, hfm *hyperfleetv1alpha1.Manifest, statusPrefix, scopedTaskKey string) []hyperfleetv1alpha1.ResourceStatus {
 	log := logf.FromContext(ctx)
 
 	type watchedResource struct {
@@ -423,7 +408,11 @@ func (r *ManifestReconciler) updateResourceStatuses(ctx context.Context, hfm *hy
 		if !res.Watch {
 			continue
 		}
-		group, version, name, namespace, _ := extractResourceMeta(res.Content.Raw)
+		group, version, name, namespace, err := extractResourceMeta(res.Content.Raw)
+		if err != nil {
+			log.Error(err, "failed to extract metadata for resource status collection, skipping", "resource", res.Resource)
+			continue
+		}
 		readDocID := dynamo.NewDocumentID(scopedTaskKey+"-read", group, version, res.Resource, namespace, name)
 		watched = append(watched, watchedResource{group: group, version: version, resource: res.Resource, name: name, namespace: namespace, readDocID: readDocID})
 	}
@@ -473,34 +462,12 @@ func (r *ManifestReconciler) updateResourceStatuses(ctx context.Context, hfm *hy
 		})
 	}
 
-	if len(statuses) == 0 {
-		return
-	}
-
-	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		var latest hyperfleetv1alpha1.Manifest
-		if err := r.Get(ctx, client.ObjectKeyFromObject(hfm), &latest); err != nil {
-			return err
-		}
-		latest.Status.ResourceStatuses = statuses
-		return r.Status().Update(ctx, &latest)
-	}); err != nil {
-		log.Error(err, "failed to update resourceStatuses")
-	}
+	return statuses
 }
 
 func (r *ManifestReconciler) setSyncedCondition(ctx context.Context, hfm *hyperfleetv1alpha1.Manifest, cond metav1.Condition) {
-	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		var latest hyperfleetv1alpha1.Manifest
-		if err := r.Get(ctx, client.ObjectKeyFromObject(hfm), &latest); err != nil {
-			if apierrors.IsNotFound(err) {
-				return nil
-			}
-			return err
-		}
-		meta.SetStatusCondition(&latest.Status.Conditions, cond)
-		return r.Status().Update(ctx, &latest)
-	}); err != nil {
+	meta.SetStatusCondition(&hfm.Status.Conditions, cond)
+	if err := r.Status().Update(ctx, hfm); err != nil {
 		logf.FromContext(ctx).Error(err, "Failed to update Synced condition")
 	}
 }
@@ -509,21 +476,9 @@ func (r *ManifestReconciler) setPhase(ctx context.Context, hfm *hyperfleetv1alph
 	if hfm.Status.Phase == phase {
 		return
 	}
-	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		var latest hyperfleetv1alpha1.Manifest
-		if err := r.Get(ctx, client.ObjectKeyFromObject(hfm), &latest); err != nil {
-			if apierrors.IsNotFound(err) {
-				return nil
-			}
-			return err
-		}
-		if latest.Status.Phase == phase {
-			return nil
-		}
-		latest.Status.Phase = phase
-		latest.Status.ObservedGeneration = latest.Generation
-		return r.Status().Update(ctx, &latest)
-	}); err != nil {
+	hfm.Status.Phase = phase
+	hfm.Status.ObservedGeneration = hfm.Generation
+	if err := r.Status().Update(ctx, hfm); err != nil {
 		logf.FromContext(ctx).Error(err, "Failed to update manifest phase", "phase", phase)
 	}
 }

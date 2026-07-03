@@ -3,10 +3,12 @@ package fleetstore
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"sync"
 	"sync/atomic"
 
+	toolscache "k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -23,7 +25,8 @@ type storeEntry struct {
 // InformerStore is a per-kind in-memory store fed by the watch protocol.
 // Implements versionGuardedApply (§7.4) and handler fan-out.
 type InformerStore struct {
-	kind string
+	kind   string
+	logger *slog.Logger
 
 	mu    sync.RWMutex
 	items map[string]storeEntry // key: "namespace/name"
@@ -31,8 +34,9 @@ type InformerStore struct {
 	synced     atomic.Bool
 	maxSeenSeq sync.Map // key → max seq seen for freshness floor
 
-	handlers []registeredHandler
-	handlerMu sync.RWMutex
+	handlers      []registeredHandler
+	cacheHandlers []toolscache.ResourceEventHandler
+	handlerMu     sync.RWMutex
 }
 
 type registeredHandler struct {
@@ -42,10 +46,11 @@ type registeredHandler struct {
 }
 
 // NewInformerStore creates a new informer store for the given kind.
-func NewInformerStore(kind string) *InformerStore {
+func NewInformerStore(kind string, logger *slog.Logger) *InformerStore {
 	return &InformerStore{
-		kind:  kind,
-		items: make(map[string]storeEntry),
+		kind:   kind,
+		logger: logger,
+		items:  make(map[string]storeEntry),
 	}
 }
 
@@ -68,6 +73,13 @@ func (s *InformerStore) AddEventHandler(h handler.EventHandler, queue workqueue.
 		queue:      queue,
 		predicates: preds,
 	})
+}
+
+// AddCacheHandler registers a client-go ResourceEventHandler for events from this store.
+func (s *InformerStore) AddCacheHandler(h toolscache.ResourceEventHandler) {
+	s.handlerMu.Lock()
+	defer s.handlerMu.Unlock()
+	s.cacheHandlers = append(s.cacheHandlers, h)
 }
 
 // Get retrieves an object from the store.
@@ -126,6 +138,7 @@ func (s *InformerStore) Apply(row *ResourceRow, isAudit bool) {
 			obj, err := Decode(row)
 			if err != nil {
 				s.mu.Unlock()
+				s.logger.Error("decode failed in Apply (uid mismatch)", "kind", s.kind, "key", key, "error", err)
 				return
 			}
 			s.items[key] = storeEntry{obj: obj, seq: row.Seq}
@@ -146,6 +159,7 @@ func (s *InformerStore) Apply(row *ResourceRow, isAudit bool) {
 		obj, err := Decode(row)
 		if err != nil {
 			s.mu.Unlock()
+			s.logger.Error("decode failed in Apply (update)", "kind", s.kind, "key", key, "error", err)
 			return
 		}
 		s.items[key] = storeEntry{obj: obj, seq: row.Seq}
@@ -158,6 +172,7 @@ func (s *InformerStore) Apply(row *ResourceRow, isAudit bool) {
 	obj, err := Decode(row)
 	if err != nil {
 		s.mu.Unlock()
+		s.logger.Error("decode failed in Apply (add)", "kind", s.kind, "key", key, "error", err)
 		return
 	}
 	s.items[key] = storeEntry{obj: obj, seq: row.Seq}
@@ -166,13 +181,14 @@ func (s *InformerStore) Apply(row *ResourceRow, isAudit bool) {
 }
 
 // AuditDiff computes keys present in the store but absent from a full re-list result.
-// Returns keys that should be emitted as Deleted (rule 1 of §7.4).
-func (s *InformerStore) AuditDiff(listedKeys map[string]bool) []string {
+// Only flags keys whose stored seq <= auditMaxSeq; keys with higher seq were added
+// after the audit snapshot and must not be evicted.
+func (s *InformerStore) AuditDiff(listedKeys map[string]bool, auditMaxSeq int64) []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var missing []string
-	for key := range s.items {
-		if !listedKeys[key] {
+	for key, entry := range s.items {
+		if !listedKeys[key] && entry.seq <= auditMaxSeq {
 			missing = append(missing, key)
 		}
 	}
@@ -214,14 +230,15 @@ func (s *InformerStore) MaxSeenSeq(key string) int64 {
 
 func (s *InformerStore) updateMaxSeenSeq(key string, seq int64) {
 	for {
-		v, loaded := s.maxSeenSeq.Load(key)
-		if loaded && v.(int64) >= seq {
+		existing, loaded := s.maxSeenSeq.LoadOrStore(key, seq)
+		if !loaded {
 			return
 		}
-		if s.maxSeenSeq.CompareAndSwap(key, v, seq) || !loaded {
-			if !loaded {
-				s.maxSeenSeq.Store(key, seq)
-			}
+		cur := existing.(int64)
+		if cur >= seq {
+			return
+		}
+		if s.maxSeenSeq.CompareAndSwap(key, existing, seq) {
 			return
 		}
 	}
@@ -232,7 +249,10 @@ func (s *InformerStore) emitAdded(obj client.Object) {
 	s.handlerMu.RLock()
 	defer s.handlerMu.RUnlock()
 	for _, h := range s.handlers {
-		h.handler.Create(ctx, event.CreateEvent{Object: obj}, h.queue)
+		s.safeCall(func() { h.handler.Create(ctx, event.CreateEvent{Object: obj}, h.queue) })
+	}
+	for _, h := range s.cacheHandlers {
+		s.safeCall(func() { h.OnAdd(obj, false) })
 	}
 }
 
@@ -241,7 +261,10 @@ func (s *InformerStore) emitUpdated(old, new client.Object) {
 	s.handlerMu.RLock()
 	defer s.handlerMu.RUnlock()
 	for _, h := range s.handlers {
-		h.handler.Update(ctx, event.UpdateEvent{ObjectOld: old, ObjectNew: new}, h.queue)
+		s.safeCall(func() { h.handler.Update(ctx, event.UpdateEvent{ObjectOld: old, ObjectNew: new}, h.queue) })
+	}
+	for _, h := range s.cacheHandlers {
+		s.safeCall(func() { h.OnUpdate(old, new) })
 	}
 }
 
@@ -250,8 +273,20 @@ func (s *InformerStore) emitDeleted(obj client.Object) {
 	s.handlerMu.RLock()
 	defer s.handlerMu.RUnlock()
 	for _, h := range s.handlers {
-		h.handler.Delete(ctx, event.DeleteEvent{Object: obj}, h.queue)
+		s.safeCall(func() { h.handler.Delete(ctx, event.DeleteEvent{Object: obj}, h.queue) })
 	}
+	for _, h := range s.cacheHandlers {
+		s.safeCall(func() { h.OnDelete(obj) })
+	}
+}
+
+func (s *InformerStore) safeCall(fn func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.logger.Error("panic in event handler", "kind", s.kind, "panic", r)
+		}
+	}()
+	fn()
 }
 
 func storeKey(namespace, name string) string {
@@ -266,7 +301,11 @@ func (s *InformerStore) FreshnessCheck(key string) bool {
 		return true
 	}
 	current := s.SeqForKey(key)
-	return current >= maxSeen
+	fresh := current >= maxSeen
+	if !fresh {
+		FreshnessFloorHits.Inc()
+	}
+	return fresh
 }
 
 func seqFromObject(obj client.Object) int64 {

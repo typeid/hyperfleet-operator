@@ -124,15 +124,26 @@ func (c *Cache) Start(ctx context.Context) error {
 	return nil
 }
 
-// WaitForCacheSync blocks until all registered stores are synced.
+// WaitForCacheSync blocks until all registered stores are synced or the context is cancelled.
 func (c *Cache) WaitForCacheSync(ctx context.Context) bool {
-	for _, store := range c.stores {
-		if !store.HasSynced() {
+	for {
+		allSynced := true
+		for _, store := range c.stores {
+			if !store.HasSynced() {
+				allSynced = false
+				break
+			}
+		}
+		if allSynced {
+			c.synced.Store(true)
+			return true
+		}
+		select {
+		case <-ctx.Done():
 			return false
+		case <-time.After(50 * time.Millisecond):
 		}
 	}
-	c.synced.Store(true)
-	return true
 }
 
 // IndexField is not supported.
@@ -146,15 +157,18 @@ type informerAdapter struct {
 }
 
 func (i *informerAdapter) AddEventHandler(handler toolscache.ResourceEventHandler) (toolscache.ResourceEventHandlerRegistration, error) {
-	return nil, nil
+	i.store.AddCacheHandler(handler)
+	return &syncedRegistration{store: i.store}, nil
 }
 
 func (i *informerAdapter) AddEventHandlerWithResyncPeriod(handler toolscache.ResourceEventHandler, resyncPeriod time.Duration) (toolscache.ResourceEventHandlerRegistration, error) {
-	return nil, nil
+	i.store.AddCacheHandler(handler)
+	return &syncedRegistration{store: i.store}, nil
 }
 
 func (i *informerAdapter) AddEventHandlerWithOptions(handler toolscache.ResourceEventHandler, options toolscache.HandlerOptions) (toolscache.ResourceEventHandlerRegistration, error) {
-	return nil, nil
+	i.store.AddCacheHandler(handler)
+	return &syncedRegistration{store: i.store}, nil
 }
 
 func (i *informerAdapter) RemoveEventHandler(handle toolscache.ResourceEventHandlerRegistration) error {
@@ -177,8 +191,16 @@ func (i *informerAdapter) IsStopped() bool {
 	return false
 }
 
+// syncedRegistration implements toolscache.ResourceEventHandlerRegistration.
+type syncedRegistration struct {
+	store *InformerStore
+}
+
+func (r *syncedRegistration) HasSynced() bool                          { return r.store.HasSynced() }
+func (r *syncedRegistration) HasSyncedChecker() toolscache.DoneChecker { return nil }
+
 // Scheme and RESTMapper return nil — not used by FleetStore.
-func (c *Cache) Scheme() *runtime.Scheme { return nil }
+func (c *Cache) Scheme() *runtime.Scheme     { return nil }
 func (c *Cache) RESTMapper() meta.RESTMapper { return nil }
 func (c *Cache) GroupVersionKindFor(obj runtime.Object) (schema.GroupVersionKind, error) {
 	return schema.GroupVersionKind{}, nil
