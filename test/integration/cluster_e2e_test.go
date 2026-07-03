@@ -180,9 +180,8 @@ var _ = Describe("Cluster lifecycle", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 
-		// Simulate a DynamoDB Streams event by dispatching through the EventRouter
-		// so the controller re-reconciles immediately instead of waiting for the
-		// 5-minute fallback poll.
+		// DynamoDB Local streams are not reliable enough to deliver events
+		// within test timeouts, so dispatch manually to trigger re-reconciliation.
 		eventRouter.Dispatch(readDocID)
 
 		By("verifying Cluster CR status is updated with HostedCluster data")

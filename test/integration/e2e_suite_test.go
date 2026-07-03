@@ -17,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	dynamodbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodbstreams"
 	"github.com/jackc/pgx/v5/pgxpool"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -30,6 +31,7 @@ import (
 	hyperfleetv1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
 	"github.com/typeid/hyperfleet-operator/internal/controller"
 	dynamo "github.com/typeid/hyperfleet-operator/internal/dynamo"
+	"github.com/typeid/hyperfleet-operator/internal/dynamo/statusstream"
 	"github.com/typeid/hyperfleet-operator/internal/mcconfig"
 	"github.com/typeid/hyperfleet-operator/internal/render"
 	"github.com/typeid/hyperfleet-operator/pkg/fleetstore"
@@ -207,6 +209,24 @@ var _ = BeforeSuite(func() {
 	Eventually(func() bool {
 		return fm.Cache.WaitForCacheSync(ctx)
 	}, 10*time.Second, 100*time.Millisecond).Should(BeTrue(), "FleetStore cache did not sync")
+
+	// ── DynamoDB Streams ──
+
+	By("starting DynamoDB status stream watchers")
+	streamsClient := dynamodbstreams.NewFromConfig(aws.Config{
+		Region:       "us-east-1",
+		Credentials:  credentials.NewStaticCredentialsProvider("test", "test", "test"),
+		BaseEndpoint: aws.String(fmt.Sprintf("http://127.0.0.1:%s", ddbPort)),
+	})
+	streamMgr := statusstream.NewManager(
+		dynamoDBCli,
+		streamsClient,
+		mcLoader,
+		[]string{dynamo.TableSuffixStatusApplyDesires, dynamo.TableSuffixStatusReadDesires},
+		func(documentID string) { eventRouter.Dispatch(documentID) },
+		logger.With("component", "statusstream"),
+	)
+	go streamMgr.Run(ctx, 5*time.Second)
 
 	// ── kube-applier-aws simulators ──
 
@@ -393,7 +413,7 @@ func createTables(db *dynamodb.Client) {
 	for _, prefix := range prefixes {
 		for _, suffix := range suffixes {
 			tableName := prefix + suffix
-			_, err := db.CreateTable(context.Background(), &dynamodb.CreateTableInput{
+			input := &dynamodb.CreateTableInput{
 				TableName: aws.String(tableName),
 				AttributeDefinitions: []dynamodbtypes.AttributeDefinition{
 					{
@@ -408,7 +428,14 @@ func createTables(db *dynamodb.Client) {
 					},
 				},
 				BillingMode: dynamodbtypes.BillingModePayPerRequest,
-			})
+			}
+			if prefix == mc+"-status" {
+				input.StreamSpecification = &dynamodbtypes.StreamSpecification{
+					StreamEnabled:  aws.Bool(true),
+					StreamViewType: dynamodbtypes.StreamViewTypeNewAndOldImages,
+				}
+			}
+			_, err := db.CreateTable(context.Background(), input)
 			Expect(err).NotTo(HaveOccurred(), "create table %s", tableName)
 		}
 	}
