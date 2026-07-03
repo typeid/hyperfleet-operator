@@ -46,7 +46,7 @@ const (
 type PlacementReconciler struct {
 	client.Client
 	Scheme                  *runtime.Scheme
-	MCConfig                *mcconfig.Loader
+	MCConfig                mcconfig.MCLister
 	MaxConcurrentReconciles int
 }
 

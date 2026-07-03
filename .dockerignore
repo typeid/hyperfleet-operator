@@ -4,6 +4,7 @@
 # Re-include Go source directories
 !cmd/
 !internal/
+!pkg/
 !api/
 !config/crd/bases/
 

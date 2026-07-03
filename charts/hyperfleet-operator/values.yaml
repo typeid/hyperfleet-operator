@@ -6,11 +6,11 @@ image:
   pullPolicy: IfNotPresent
 
 awsRegion: ""
-fleetDBClusterName: ""
 baseDomain: ""
 
-leaderElection:
-  enabled: true
+fleetstore:
+  secretName: fleetstore-dsn
+  secretKey: dsn
 
 serviceAccount:
   create: true

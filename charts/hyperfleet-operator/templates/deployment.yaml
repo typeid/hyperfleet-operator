@@ -32,12 +32,14 @@ spec:
                 - "ALL"
           args:
             - --aws-region={{ required "awsRegion is required" .Values.awsRegion }}
-            - --fleet-db-cluster-name={{ required "fleetDBClusterName is required" .Values.fleetDBClusterName }}
             - --base-domain={{ required "baseDomain is required" .Values.baseDomain }}
-            {{- if .Values.leaderElection.enabled }}
-            - --leader-elect=true
-            {{- end }}
             - --health-probe-bind-address=:8081
+          env:
+            - name: FLEETSTORE_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.fleetstore.secretName | default "fleetstore-dsn" }}
+                  key: {{ .Values.fleetstore.secretKey | default "dsn" }}
           ports:
             - name: health
               containerPort: 8081

@@ -22,7 +22,7 @@ type watcherHandle struct {
 type Manager struct {
 	dbClient      *dynamodb.Client
 	streamsClient *dynamodbstreams.Client
-	mcLoader      *mcconfig.Loader
+	mcLoader      mcconfig.MCLister
 	tableSuffixes []string
 	onChange      OnChange
 	logger        *slog.Logger
@@ -31,7 +31,7 @@ type Manager struct {
 func NewManager(
 	dbClient *dynamodb.Client,
 	streamsClient *dynamodbstreams.Client,
-	mcLoader *mcconfig.Loader,
+	mcLoader mcconfig.MCLister,
 	tableSuffixes []string,
 	onChange OnChange,
 	logger *slog.Logger,

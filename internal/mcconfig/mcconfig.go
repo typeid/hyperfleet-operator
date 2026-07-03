@@ -12,6 +12,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	hyperfleetv1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
 )
 
 const (
@@ -21,9 +23,14 @@ const (
 )
 
 type ManagementCluster struct {
-	ID        string `yaml:"id"`
-	Region    string `yaml:"region"`
-	AccountID string `yaml:"accountId"`
+	ID        string `json:"id" yaml:"id"`
+	Region    string `json:"region" yaml:"region"`
+	AccountID string `json:"accountId" yaml:"accountId"`
+}
+
+// MCLister is satisfied by both Loader (ConfigMap-based) and StoreLoader (FleetStore-based).
+type MCLister interface {
+	List() []ManagementCluster
 }
 
 type Loader struct {
@@ -110,4 +117,32 @@ func parseClusters(data []byte) ([]ManagementCluster, error) {
 		return nil, fmt.Errorf("mc config: no management clusters defined")
 	}
 	return clusters, nil
+}
+
+// StoreLoader reads ManagementCluster CRs from the FleetStore cache,
+// replacing ConfigMap-based polling.
+type StoreLoader struct {
+	reader client.Reader
+}
+
+// NewStoreLoader creates a StoreLoader backed by a FleetStore cache.
+func NewStoreLoader(reader client.Reader) *StoreLoader {
+	return &StoreLoader{reader: reader}
+}
+
+// List returns all ManagementCluster CRs as mcconfig.ManagementCluster structs.
+func (s *StoreLoader) List() []ManagementCluster {
+	var list hyperfleetv1alpha1.ManagementClusterList
+	if err := s.reader.List(context.Background(), &list); err != nil {
+		return nil
+	}
+	out := make([]ManagementCluster, 0, len(list.Items))
+	for _, mc := range list.Items {
+		out = append(out, ManagementCluster{
+			ID:        mc.Name,
+			Region:    mc.Spec.Region,
+			AccountID: mc.Spec.AccountID,
+		})
+	}
+	return out
 }
