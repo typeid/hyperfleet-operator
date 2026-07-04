@@ -183,13 +183,13 @@ func (a *Auditor) gcLoop(ctx context.Context) {
 // runGC deletes resources whose owners no longer exist as live rows.
 func (a *Auditor) runGC(ctx context.Context) error {
 	tag, err := a.pool.Exec(ctx, `
-		DELETE FROM resources
-		WHERE deleted_at IS NULL
-			AND owner_refs != '[]'
+		DELETE FROM resources r
+		WHERE r.deleted_at IS NULL
+			AND r.owner_refs != '[]'
 			AND NOT EXISTS (
 				SELECT 1 FROM resources o
 				WHERE o.uid = ANY(
-					SELECT e->>'uid' FROM jsonb_array_elements(owner_refs) e
+					SELECT (e->>'uid')::uuid FROM jsonb_array_elements(r.owner_refs) e
 				)
 				AND o.deleted_at IS NULL
 			)`)
