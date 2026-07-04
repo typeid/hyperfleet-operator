@@ -177,14 +177,25 @@ func buildScheme() (*runtime.Scheme, error) {
 }
 
 func newStaticMapper() meta.RESTMapper {
-	gv := v1alpha1.SchemeGroupVersion
-	mapper := meta.NewDefaultRESTMapper([]schema.GroupVersion{gv})
+	gvs := map[schema.GroupVersion]bool{}
+	for _, kind := range RegisteredKinds() {
+		gvk, _ := GVKFor(kind)
+		gvs[gvk.GroupVersion()] = true
+	}
+	gvList := make([]schema.GroupVersion, 0, len(gvs))
+	for gv := range gvs {
+		gvList = append(gvList, gv)
+	}
+	mapper := meta.NewDefaultRESTMapper(gvList)
 
-	mapper.Add(gv.WithKind("Cluster"), meta.RESTScopeNamespace)
-	mapper.Add(gv.WithKind("NodePool"), meta.RESTScopeNamespace)
-	mapper.Add(gv.WithKind("Placement"), meta.RESTScopeNamespace)
-	mapper.Add(gv.WithKind("Manifest"), meta.RESTScopeNamespace)
-	mapper.Add(gv.WithKind("ManagementCluster"), meta.RESTScopeRoot)
+	for _, kind := range RegisteredKinds() {
+		gvk, _ := GVKFor(kind)
+		scope := meta.RESTScopeNamespace
+		if IsGlobal(kind) {
+			scope = meta.RESTScopeRoot
+		}
+		mapper.Add(gvk, scope)
+	}
 
 	return mapper
 }

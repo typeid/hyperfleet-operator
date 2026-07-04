@@ -6,13 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	v1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/labels"
@@ -499,41 +499,15 @@ func labelsFromObject(obj client.Object) labels.Set {
 	return labels.Set(l)
 }
 
-func setListItems(kind string, list client.ObjectList, items []client.Object) error {
-	switch kind {
-	case "Cluster":
-		l := list.(*v1alpha1.ClusterList)
-		l.Items = make([]v1alpha1.Cluster, 0, len(items))
-		for _, item := range items {
-			l.Items = append(l.Items, *item.(*v1alpha1.Cluster))
-		}
-	case "NodePool":
-		l := list.(*v1alpha1.NodePoolList)
-		l.Items = make([]v1alpha1.NodePool, 0, len(items))
-		for _, item := range items {
-			l.Items = append(l.Items, *item.(*v1alpha1.NodePool))
-		}
-	case "Placement":
-		l := list.(*v1alpha1.PlacementList)
-		l.Items = make([]v1alpha1.Placement, 0, len(items))
-		for _, item := range items {
-			l.Items = append(l.Items, *item.(*v1alpha1.Placement))
-		}
-	case "Manifest":
-		l := list.(*v1alpha1.ManifestList)
-		l.Items = make([]v1alpha1.Manifest, 0, len(items))
-		for _, item := range items {
-			l.Items = append(l.Items, *item.(*v1alpha1.Manifest))
-		}
-	case "ManagementCluster":
-		l := list.(*v1alpha1.ManagementClusterList)
-		l.Items = make([]v1alpha1.ManagementCluster, 0, len(items))
-		for _, item := range items {
-			l.Items = append(l.Items, *item.(*v1alpha1.ManagementCluster))
-		}
-	default:
-		return fmt.Errorf("unknown list kind %q", kind)
+func setListItems(_ string, list client.ObjectList, items []client.Object) error {
+	lv := reflect.ValueOf(list).Elem()
+	itemsField := lv.FieldByName("Items")
+
+	newSlice := reflect.MakeSlice(itemsField.Type(), 0, len(items))
+	for _, item := range items {
+		newSlice = reflect.Append(newSlice, reflect.ValueOf(item).Elem())
 	}
+	itemsField.Set(newSlice)
 	return nil
 }
 

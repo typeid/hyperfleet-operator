@@ -3,10 +3,10 @@ package fleetstore
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strconv"
 	"time"
 
-	v1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -95,10 +95,8 @@ func Encode(obj client.Object) (*ResourceRow, error) {
 		row.Finalizers = []string{}
 	}
 
-	if kind == "Cluster" {
-		if c, ok := obj.(*v1alpha1.Cluster); ok {
-			row.AWSAccountID = &c.Spec.AccountID
-		}
+	if aid := ExtractAccountID(kind, obj); aid != nil {
+		row.AWSAccountID = aid
 	} else if !IsGlobal(kind) && ns != "" {
 		row.AWSAccountID = &ns
 	}
@@ -175,120 +173,38 @@ func SeqFromResourceVersion(rv string) (int64, error) {
 }
 
 func marshalSpecStatus(kind string, obj client.Object) (spec, status json.RawMessage, err error) {
-	switch kind {
-	case "Cluster":
-		o := obj.(*v1alpha1.Cluster)
-		spec, err = json.Marshal(o.Spec)
-		if err != nil {
-			return nil, nil, fmt.Errorf("marshal Cluster spec: %w", err)
-		}
-		status, err = json.Marshal(o.Status)
-	case "NodePool":
-		o := obj.(*v1alpha1.NodePool)
-		spec, err = json.Marshal(o.Spec)
-		if err != nil {
-			return nil, nil, fmt.Errorf("marshal NodePool spec: %w", err)
-		}
-		status, err = json.Marshal(o.Status)
-	case "Placement":
-		o := obj.(*v1alpha1.Placement)
-		spec, err = json.Marshal(o.Spec)
-		if err != nil {
-			return nil, nil, fmt.Errorf("marshal Placement spec: %w", err)
-		}
-		status, err = json.Marshal(o.Status)
-	case "Manifest":
-		o := obj.(*v1alpha1.Manifest)
-		spec, err = json.Marshal(o.Spec)
-		if err != nil {
-			return nil, nil, fmt.Errorf("marshal Manifest spec: %w", err)
-		}
-		status, err = json.Marshal(o.Status)
-	case "ManagementCluster":
-		o := obj.(*v1alpha1.ManagementCluster)
-		spec, err = json.Marshal(o.Spec)
-		if err != nil {
-			return nil, nil, fmt.Errorf("marshal ManagementCluster spec: %w", err)
-		}
-		status, err = json.Marshal(o.Status)
-	default:
-		return nil, nil, fmt.Errorf("fleetstore codec: unknown kind %q", kind)
+	v := reflect.ValueOf(obj).Elem()
+
+	spec, err = json.Marshal(v.FieldByName("Spec").Interface())
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal %s spec: %w", kind, err)
 	}
+
+	status, err = json.Marshal(v.FieldByName("Status").Interface())
 	if err != nil {
 		return nil, nil, fmt.Errorf("marshal %s status: %w", kind, err)
 	}
+
 	return spec, status, nil
 }
 
 func unmarshalSpecStatus(kind string, obj client.Object, spec, status json.RawMessage) error {
-	switch kind {
-	case "Cluster":
-		o := obj.(*v1alpha1.Cluster)
-		if err := json.Unmarshal(spec, &o.Spec); err != nil {
-			return fmt.Errorf("unmarshal Cluster spec: %w", err)
-		}
-		if len(status) > 0 {
-			if err := json.Unmarshal(status, &o.Status); err != nil {
-				return fmt.Errorf("unmarshal Cluster status: %w", err)
-			}
-		}
-	case "NodePool":
-		o := obj.(*v1alpha1.NodePool)
-		if err := json.Unmarshal(spec, &o.Spec); err != nil {
-			return fmt.Errorf("unmarshal NodePool spec: %w", err)
-		}
-		if len(status) > 0 {
-			if err := json.Unmarshal(status, &o.Status); err != nil {
-				return fmt.Errorf("unmarshal NodePool status: %w", err)
-			}
-		}
-	case "Placement":
-		o := obj.(*v1alpha1.Placement)
-		if err := json.Unmarshal(spec, &o.Spec); err != nil {
-			return fmt.Errorf("unmarshal Placement spec: %w", err)
-		}
-		if len(status) > 0 {
-			if err := json.Unmarshal(status, &o.Status); err != nil {
-				return fmt.Errorf("unmarshal Placement status: %w", err)
-			}
-		}
-	case "Manifest":
-		o := obj.(*v1alpha1.Manifest)
-		if err := json.Unmarshal(spec, &o.Spec); err != nil {
-			return fmt.Errorf("unmarshal Manifest spec: %w", err)
-		}
-		if len(status) > 0 {
-			if err := json.Unmarshal(status, &o.Status); err != nil {
-				return fmt.Errorf("unmarshal Manifest status: %w", err)
-			}
-		}
-	case "ManagementCluster":
-		o := obj.(*v1alpha1.ManagementCluster)
-		if err := json.Unmarshal(spec, &o.Spec); err != nil {
-			return fmt.Errorf("unmarshal ManagementCluster spec: %w", err)
-		}
-		if len(status) > 0 {
-			if err := json.Unmarshal(status, &o.Status); err != nil {
-				return fmt.Errorf("unmarshal ManagementCluster status: %w", err)
-			}
-		}
-	default:
-		return fmt.Errorf("fleetstore codec: unknown kind %q", kind)
+	v := reflect.ValueOf(obj).Elem()
+
+	if err := json.Unmarshal(spec, v.FieldByName("Spec").Addr().Interface()); err != nil {
+		return fmt.Errorf("unmarshal %s spec: %w", kind, err)
 	}
+
+	if len(status) > 0 {
+		if err := json.Unmarshal(status, v.FieldByName("Status").Addr().Interface()); err != nil {
+			return fmt.Errorf("unmarshal %s status: %w", kind, err)
+		}
+	}
+
 	return nil
 }
 
 func setTypeMeta(kind string, obj client.Object) {
-	switch kind {
-	case "Cluster":
-		obj.(*v1alpha1.Cluster).TypeMeta = metav1.TypeMeta{Kind: "Cluster", APIVersion: v1alpha1.SchemeGroupVersion.String()}
-	case "NodePool":
-		obj.(*v1alpha1.NodePool).TypeMeta = metav1.TypeMeta{Kind: "NodePool", APIVersion: v1alpha1.SchemeGroupVersion.String()}
-	case "Placement":
-		obj.(*v1alpha1.Placement).TypeMeta = metav1.TypeMeta{Kind: "Placement", APIVersion: v1alpha1.SchemeGroupVersion.String()}
-	case "Manifest":
-		obj.(*v1alpha1.Manifest).TypeMeta = metav1.TypeMeta{Kind: "Manifest", APIVersion: v1alpha1.SchemeGroupVersion.String()}
-	case "ManagementCluster":
-		obj.(*v1alpha1.ManagementCluster).TypeMeta = metav1.TypeMeta{Kind: "ManagementCluster", APIVersion: v1alpha1.SchemeGroupVersion.String()}
-	}
+	gvk, _ := GVKFor(kind)
+	obj.GetObjectKind().SetGroupVersionKind(gvk)
 }
