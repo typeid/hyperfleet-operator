@@ -3,6 +3,8 @@
 package e2e
 
 import (
+	"time"
+
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	dynamodbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
@@ -22,7 +24,22 @@ var _ = BeforeEach(func() {
 })
 
 func purgeFleetstore() {
-	_, err := pool.Exec(ctx, "DELETE FROM resources WHERE kind != 'ManagementCluster'")
+	// Tombstone resources so the trigger fires and the watcher removes them from cache.
+	_, err := pool.Exec(ctx, `
+		UPDATE resources SET deleted_at = now()
+		WHERE kind != 'ManagementCluster' AND deleted_at IS NULL`)
+	Expect(err).NotTo(HaveOccurred())
+
+	// Wait for the watcher to process the tombstones.
+	var maxSeq int64
+	err = pool.QueryRow(ctx, "SELECT COALESCE(MAX(seq), 0) FROM resources").Scan(&maxSeq)
+	Expect(err).NotTo(HaveOccurred())
+	Eventually(func() int64 {
+		return fm.Watcher.Cursor()
+	}, 5*time.Second, 50*time.Millisecond).Should(BeNumerically(">=", maxSeq))
+
+	// Physically remove tombstoned rows.
+	_, err = pool.Exec(ctx, "DELETE FROM resources WHERE deleted_at IS NOT NULL AND kind != 'ManagementCluster'")
 	Expect(err).NotTo(HaveOccurred())
 }
 

@@ -69,9 +69,7 @@ func (c *Cache) List(ctx context.Context, list client.ObjectList, opts ...client
 	}
 
 	ns := listOpts.Namespace
-	if IsGlobal(kind) && ns == "" {
-		ns = ""
-	} else if IsGlobal(kind) {
+	if IsGlobal(kind) {
 		ns = ""
 	}
 

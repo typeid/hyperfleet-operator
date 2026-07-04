@@ -5,10 +5,7 @@ package e2e
 import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
-	hyperfleetv1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
 	dynamo "github.com/typeid/hyperfleet-operator/internal/dynamo"
 )
 
@@ -16,22 +13,9 @@ var _ = Describe("Cross-component interaction", func() {
 	const testNS = "111222333444"
 
 	AfterEach(func() {
-		c := &hyperfleetv1alpha1.Cluster{}
-		if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: "e2e-sep-test"}, c); err == nil {
-			controllerutil.RemoveFinalizer(c, "hyperfleet.io/cluster")
-			_ = k8sClient.Update(ctx, c)
-			_ = k8sClient.Delete(ctx, c)
-		}
-		p := &hyperfleetv1alpha1.Placement{}
-		if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: "e2e-sep-test-placement"}, p); err == nil {
-			_ = k8sClient.Delete(ctx, p)
-		}
-		h := &hyperfleetv1alpha1.Manifest{}
-		if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: "e2e-monitoring"}, h); err == nil {
-			controllerutil.RemoveFinalizer(h, "hyperfleet.io/manifest")
-			_ = k8sClient.Update(ctx, h)
-			_ = k8sClient.Delete(ctx, h)
-		}
+		purgeFleetstore()
+		purgeDynamoTables()
+		dynamoCli.ResetCache()
 	})
 
 	It("should keep manifest and cluster desires separate", func() {

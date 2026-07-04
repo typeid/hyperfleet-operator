@@ -42,7 +42,6 @@ func NewLeaderElector(pool *pgxpool.Pool, cfg LeaderConfig, logger *slog.Logger)
 // Acquire blocks until this pod becomes the leader or the context is cancelled.
 func (le *LeaderElector) Acquire(ctx context.Context) error {
 	le.logger.Info("waiting to acquire leader lease", "identity", le.cfg.Identity)
-	defer func() { IsLeader.WithLabelValues(le.cfg.Identity).Set(1) }()
 
 	ticker := time.NewTicker(le.cfg.Heartbeat)
 	defer ticker.Stop()
@@ -55,6 +54,7 @@ func (le *LeaderElector) Acquire(ctx context.Context) error {
 			le.logger.Warn("leader acquire error", "error", err)
 		} else if ok {
 			le.logger.Info("leader lease acquired", "identity", le.cfg.Identity)
+			IsLeader.WithLabelValues(le.cfg.Identity).Set(1)
 			return nil
 		}
 

@@ -443,6 +443,98 @@ func TestManagementClusterCRUD(t *testing.T) {
 	}
 }
 
+func TestGCDeletesOrphans(t *testing.T) {
+	pool := setupPostgres(t)
+	c := NewDirectClient(pool, testLogger())
+	ctx := context.Background()
+
+	owner := newTestCluster("ns1", "gc-owner", "111122223333")
+	if err := c.Create(ctx, owner); err != nil {
+		t.Fatalf("Create owner: %v", err)
+	}
+
+	dependent := &v1alpha1.Placement{
+		TypeMeta:   metav1.TypeMeta{Kind: "Placement", APIVersion: v1alpha1.SchemeGroupVersion.String()},
+		ObjectMeta: metav1.ObjectMeta{Namespace: "ns1", Name: "gc-dep"},
+		Spec:       v1alpha1.PlacementSpec{ClusterRef: "gc-owner", ManagementCluster: "mc01"},
+	}
+	dependent.SetOwnerReferences([]metav1.OwnerReference{{
+		APIVersion: v1alpha1.SchemeGroupVersion.String(),
+		Kind:       "Cluster",
+		Name:       owner.Name,
+		UID:        owner.GetUID(),
+	}})
+	if err := c.Create(ctx, dependent); err != nil {
+		t.Fatalf("Create dependent: %v", err)
+	}
+
+	// Dependent should exist before GC.
+	got := &v1alpha1.Placement{}
+	if err := c.Get(ctx, client.ObjectKey{Namespace: "ns1", Name: "gc-dep"}, got); err != nil {
+		t.Fatalf("Get dependent before GC: %v", err)
+	}
+
+	// GC should not delete the dependent while the owner is alive.
+	auditor := NewAuditor(pool, nil, nil, DefaultAuditConfig(), testLogger())
+	if err := auditor.runGC(ctx); err != nil {
+		t.Fatalf("runGC (owner alive): %v", err)
+	}
+	if err := c.Get(ctx, client.ObjectKey{Namespace: "ns1", Name: "gc-dep"}, got); err != nil {
+		t.Fatal("GC deleted dependent while owner was alive")
+	}
+
+	// Delete the owner (tombstone it).
+	if err := c.Delete(ctx, owner); err != nil {
+		t.Fatalf("Delete owner: %v", err)
+	}
+
+	// Run GC — dependent should be deleted.
+	if err := auditor.runGC(ctx); err != nil {
+		t.Fatalf("runGC (owner deleted): %v", err)
+	}
+
+	err := c.Get(ctx, client.ObjectKey{Namespace: "ns1", Name: "gc-dep"}, &v1alpha1.Placement{})
+	if !apierrors.IsNotFound(err) {
+		t.Errorf("Get dependent after GC: got %v, want NotFound", err)
+	}
+}
+
+func TestGCPreservesOwnedWithLiveOwner(t *testing.T) {
+	pool := setupPostgres(t)
+	c := NewDirectClient(pool, testLogger())
+	ctx := context.Background()
+
+	owner := newTestCluster("ns1", "gc-alive", "111122223333")
+	if err := c.Create(ctx, owner); err != nil {
+		t.Fatalf("Create owner: %v", err)
+	}
+
+	dependent := &v1alpha1.Placement{
+		TypeMeta:   metav1.TypeMeta{Kind: "Placement", APIVersion: v1alpha1.SchemeGroupVersion.String()},
+		ObjectMeta: metav1.ObjectMeta{Namespace: "ns1", Name: "gc-kept"},
+		Spec:       v1alpha1.PlacementSpec{ClusterRef: "gc-alive", ManagementCluster: "mc01"},
+	}
+	dependent.SetOwnerReferences([]metav1.OwnerReference{{
+		APIVersion: v1alpha1.SchemeGroupVersion.String(),
+		Kind:       "Cluster",
+		Name:       owner.Name,
+		UID:        owner.GetUID(),
+	}})
+	if err := c.Create(ctx, dependent); err != nil {
+		t.Fatalf("Create dependent: %v", err)
+	}
+
+	auditor := NewAuditor(pool, nil, nil, DefaultAuditConfig(), testLogger())
+	if err := auditor.runGC(ctx); err != nil {
+		t.Fatalf("runGC: %v", err)
+	}
+
+	got := &v1alpha1.Placement{}
+	if err := c.Get(ctx, client.ObjectKey{Namespace: "ns1", Name: "gc-kept"}, got); err != nil {
+		t.Errorf("GC incorrectly deleted dependent with live owner: %v", err)
+	}
+}
+
 func TestListExcludesTombstoned(t *testing.T) {
 	pool := setupPostgres(t)
 	c := NewDirectClient(pool, testLogger())

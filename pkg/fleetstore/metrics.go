@@ -63,4 +63,9 @@ var (
 		Name: "fleetstore_freshness_floor_hits_total",
 		Help: "Times a reconcile was deferred by the freshness floor. Alert > 0.",
 	})
+
+	GCDeletions = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "fleetstore_gc_deletions_total",
+		Help: "Resources deleted by ownerRef garbage collection.",
+	})
 )

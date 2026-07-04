@@ -14,6 +14,7 @@ type AuditConfig struct {
 	AuditInterval      time.Duration
 	TombstoneRetention time.Duration
 	CleanupInterval    time.Duration
+	GCInterval         time.Duration
 }
 
 // DefaultAuditConfig returns defaults per §10.
@@ -22,6 +23,7 @@ func DefaultAuditConfig() AuditConfig {
 		AuditInterval:      30 * time.Minute,
 		TombstoneRetention: 72 * time.Hour,
 		CleanupInterval:    1 * time.Hour,
+		GCInterval:         5 * time.Minute,
 	}
 }
 
@@ -45,10 +47,11 @@ func NewAuditor(pool *pgxpool.Pool, watcher *Watcher, stores map[string]*Informe
 	}
 }
 
-// Run starts the audit and cleanup loops.
+// Run starts the audit, cleanup, and GC loops.
 func (a *Auditor) Run(ctx context.Context) {
 	go a.auditLoop(ctx)
 	go a.cleanupLoop(ctx)
+	go a.gcLoop(ctx)
 }
 
 func (a *Auditor) auditLoop(ctx context.Context) {
@@ -118,7 +121,7 @@ func (a *Auditor) runAudit(ctx context.Context) error {
 		}
 		missing := store.AuditDiff(keys, auditMaxSeq)
 		for _, key := range missing {
-			store.RemoveKey(key)
+			store.RemoveKey(key, auditMaxSeq)
 			corrections++
 		}
 	}
@@ -157,6 +160,45 @@ func (a *Auditor) cleanupTombstones(ctx context.Context) error {
 	}
 	if tag.RowsAffected() > 0 {
 		a.logger.Info("tombstones cleaned", "count", tag.RowsAffected())
+	}
+	return nil
+}
+
+func (a *Auditor) gcLoop(ctx context.Context) {
+	ticker := time.NewTicker(a.cfg.GCInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := a.runGC(ctx); err != nil {
+				a.logger.Warn("gc error", "error", err)
+			}
+		}
+	}
+}
+
+// runGC deletes resources whose owners no longer exist as live rows.
+func (a *Auditor) runGC(ctx context.Context) error {
+	tag, err := a.pool.Exec(ctx, `
+		DELETE FROM resources
+		WHERE deleted_at IS NULL
+			AND owner_refs != '[]'
+			AND NOT EXISTS (
+				SELECT 1 FROM resources o
+				WHERE o.uid = ANY(
+					SELECT e->>'uid' FROM jsonb_array_elements(owner_refs) e
+				)
+				AND o.deleted_at IS NULL
+			)`)
+	if err != nil {
+		return fmt.Errorf("gc sweep: %w", err)
+	}
+	if tag.RowsAffected() > 0 {
+		GCDeletions.Add(float64(tag.RowsAffected()))
+		a.logger.Info("gc swept orphans", "count", tag.RowsAffected())
 	}
 	return nil
 }

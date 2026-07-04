@@ -10,7 +10,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	hyperfleetv1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
 	"github.com/typeid/hyperfleet-operator/internal/controller"
@@ -24,19 +23,9 @@ var _ = Describe("Manifest lifecycle", func() {
 	)
 
 	AfterEach(func() {
-		for _, name := range []string{manifestName, "e2e-monitoring-b"} {
-			hfm := &hyperfleetv1alpha1.Manifest{}
-			if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: name}, hfm); err == nil {
-				controllerutil.RemoveFinalizer(hfm, "hyperfleet.io/manifest")
-				_ = k8sClient.Update(ctx, hfm)
-				_ = k8sClient.Delete(ctx, hfm)
-			}
-		}
-		for _, name := range []string{manifestName, "e2e-monitoring-b"} {
-			Eventually(func() bool {
-				return k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: name}, &hyperfleetv1alpha1.Manifest{}) != nil
-			}).Should(BeTrue())
-		}
+		purgeFleetstore()
+		purgeDynamoTables()
+		dynamoCli.ResetCache()
 	})
 
 	It("should write ApplyDesires to DynamoDB when a Manifest is created", func() {

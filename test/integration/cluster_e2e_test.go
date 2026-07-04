@@ -11,7 +11,6 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	hyperfleetv1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
 	dynamo "github.com/typeid/hyperfleet-operator/internal/dynamo"
@@ -24,25 +23,9 @@ var _ = Describe("Cluster lifecycle", func() {
 	)
 
 	AfterEach(func() {
-		np := &hyperfleetv1alpha1.NodePool{}
-		if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: "e2e-nodepool"}, np); err == nil {
-			controllerutil.RemoveFinalizer(np, "hyperfleet.io/nodepool")
-			_ = k8sClient.Update(ctx, np)
-			_ = k8sClient.Delete(ctx, np)
-		}
-		cluster := &hyperfleetv1alpha1.Cluster{}
-		if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: clusterName}, cluster); err == nil {
-			controllerutil.RemoveFinalizer(cluster, "hyperfleet.io/cluster")
-			_ = k8sClient.Update(ctx, cluster)
-			_ = k8sClient.Delete(ctx, cluster)
-		}
-		placement := &hyperfleetv1alpha1.Placement{}
-		if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: clusterName + "-placement"}, placement); err == nil {
-			_ = k8sClient.Delete(ctx, placement)
-		}
-		Eventually(func() bool {
-			return k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: clusterName}, &hyperfleetv1alpha1.Cluster{}) != nil
-		}).Should(BeTrue())
+		purgeFleetstore()
+		purgeDynamoTables()
+		dynamoCli.ResetCache()
 	})
 
 	It("should write correct ApplyDesires to DynamoDB when a Cluster is created", func() {

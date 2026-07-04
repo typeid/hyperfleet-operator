@@ -13,7 +13,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
@@ -40,9 +39,8 @@ type InformerStore struct {
 }
 
 type registeredHandler struct {
-	handler    handler.EventHandler
-	queue      workqueue.TypedRateLimitingInterface[reconcile.Request]
-	predicates []predicate.Predicate
+	handler handler.EventHandler
+	queue   workqueue.TypedRateLimitingInterface[reconcile.Request]
 }
 
 // NewInformerStore creates a new informer store for the given kind.
@@ -65,13 +63,12 @@ func (s *InformerStore) HasSynced() bool {
 }
 
 // AddEventHandler registers a handler for events from this store.
-func (s *InformerStore) AddEventHandler(h handler.EventHandler, queue workqueue.TypedRateLimitingInterface[reconcile.Request], preds ...predicate.Predicate) {
+func (s *InformerStore) AddEventHandler(h handler.EventHandler, queue workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 	s.handlerMu.Lock()
 	defer s.handlerMu.Unlock()
 	s.handlers = append(s.handlers, registeredHandler{
-		handler:    h,
-		queue:      queue,
-		predicates: preds,
+		handler: h,
+		queue:   queue,
 	})
 }
 
@@ -115,11 +112,10 @@ func (s *InformerStore) Apply(row *ResourceRow, isAudit bool) {
 	// Update maxSeenSeq for freshness floor.
 	s.updateMaxSeenSeq(key, row.Seq)
 
-	s.mu.Lock()
-	existing, exists := s.items[key]
-
-	// Rule 2: tombstone — emit Deleted if stored, then remove.
+	// Rule 2: tombstone — handle under lock without decode.
 	if row.DeletedAt != nil {
+		s.mu.Lock()
+		existing, exists := s.items[key]
 		if exists {
 			old := existing.obj
 			delete(s.items, key)
@@ -131,16 +127,20 @@ func (s *InformerStore) Apply(row *ResourceRow, isAudit bool) {
 		return
 	}
 
+	// Decode outside the lock to avoid blocking concurrent readers.
+	obj, err := Decode(row)
+	if err != nil {
+		s.logger.Error("decode failed in Apply", "kind", s.kind, "key", key, "error", err)
+		return
+	}
+
+	s.mu.Lock()
+	existing, exists := s.items[key]
+
 	if exists {
 		// Rule 3: uid mismatch — recreation of the same name.
 		if string(row.UID) != string(existing.obj.GetUID()) {
 			old := existing.obj
-			obj, err := Decode(row)
-			if err != nil {
-				s.mu.Unlock()
-				s.logger.Error("decode failed in Apply (uid mismatch)", "kind", s.kind, "key", key, "error", err)
-				return
-			}
 			s.items[key] = storeEntry{obj: obj, seq: row.Seq}
 			s.mu.Unlock()
 			s.emitDeleted(old)
@@ -156,12 +156,6 @@ func (s *InformerStore) Apply(row *ResourceRow, isAudit bool) {
 
 		// Rule 5: store first, then emit Updated.
 		old := existing.obj
-		obj, err := Decode(row)
-		if err != nil {
-			s.mu.Unlock()
-			s.logger.Error("decode failed in Apply (update)", "kind", s.kind, "key", key, "error", err)
-			return
-		}
 		s.items[key] = storeEntry{obj: obj, seq: row.Seq}
 		s.mu.Unlock()
 		s.emitUpdated(old, obj)
@@ -169,12 +163,6 @@ func (s *InformerStore) Apply(row *ResourceRow, isAudit bool) {
 	}
 
 	// Not in store — store then emit Added.
-	obj, err := Decode(row)
-	if err != nil {
-		s.mu.Unlock()
-		s.logger.Error("decode failed in Apply (add)", "kind", s.kind, "key", key, "error", err)
-		return
-	}
 	s.items[key] = storeEntry{obj: obj, seq: row.Seq}
 	s.mu.Unlock()
 	s.emitAdded(obj)
@@ -196,10 +184,11 @@ func (s *InformerStore) AuditDiff(listedKeys map[string]bool, auditMaxSeq int64)
 }
 
 // RemoveKey removes a key from the store and emits Deleted (for audit corrections).
-func (s *InformerStore) RemoveKey(key string) {
+// maxSeq guards against removing entries that were refreshed after the audit snapshot.
+func (s *InformerStore) RemoveKey(key string, maxSeq int64) {
 	s.mu.Lock()
 	entry, exists := s.items[key]
-	if !exists {
+	if !exists || entry.seq > maxSeq {
 		s.mu.Unlock()
 		return
 	}

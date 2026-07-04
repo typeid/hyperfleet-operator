@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -134,6 +135,7 @@ func NewStoreLoader(reader client.Reader) *StoreLoader {
 func (s *StoreLoader) List() []ManagementCluster {
 	var list hyperfleetv1alpha1.ManagementClusterList
 	if err := s.reader.List(context.Background(), &list); err != nil {
+		slog.Error("failed to list ManagementCluster CRs from cache", "error", err)
 		return nil
 	}
 	out := make([]ManagementCluster, 0, len(list.Items))

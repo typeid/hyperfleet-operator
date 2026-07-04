@@ -75,6 +75,7 @@ func main() {
 		os.Exit(1)
 	}
 
+	signalCtx := ctrl.SetupSignalHandler()
 	ctx := context.Background()
 
 	// Load AWS config — credentials come from Pod Identity / IRSA automatically.
@@ -105,11 +106,11 @@ func main() {
 		setupLog.Error(err, "Failed to acquire leader lease")
 		os.Exit(1)
 	}
-	go le.Run(ctx)
+	go le.Run(signalCtx)
 
 	// Auditor for rolling consistency checks and tombstone cleanup.
 	auditor := fleetstore.NewAuditor(fm.Pool, fm.Watcher, fm.Stores, fleetstore.DefaultAuditConfig(), logger)
-	auditor.Run(ctx)
+	auditor.Run(signalCtx)
 
 	mgr := fm.Manager
 
@@ -196,7 +197,7 @@ func main() {
 	go streamMgr.Run(watchCtx, 5*time.Second)
 
 	setupLog.Info("Starting FleetStore manager")
-	if err := fm.Start(ctrl.SetupSignalHandler()); err != nil {
+	if err := fm.Start(signalCtx); err != nil {
 		setupLog.Error(err, "Failed to run manager")
 		os.Exit(1)
 	}

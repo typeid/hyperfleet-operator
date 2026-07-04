@@ -248,16 +248,28 @@ func (c *Client) tombstone(ctx context.Context, kind, ns, name string) error {
 		UPDATE resources SET
 			deleted_at = now(),
 			deletion_timestamp = COALESCE(deletion_timestamp, now())
-		WHERE kind=$1 AND namespace=$2 AND name=$3 AND deleted_at IS NULL`,
+		WHERE kind=$1 AND namespace=$2 AND name=$3 AND deleted_at IS NULL
+			AND finalizers = '{}'`,
 		kind, ns, name,
 	)
 	if err != nil {
 		return fmt.Errorf("tombstone: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return notFound(kind, name)
+		return c.disambiguateTombstoneFailure(ctx, kind, ns, name)
 	}
 	return nil
+}
+
+func (c *Client) disambiguateTombstoneFailure(ctx context.Context, kind, ns, name string) error {
+	row, err := c.directRead(ctx, kind, ns, name)
+	if err != nil {
+		return err
+	}
+	if len(row.Finalizers) > 0 {
+		return conflict(kind, name)
+	}
+	return notFound(kind, name)
 }
 
 func (c *Client) tombstoneWithCAS(ctx context.Context, kind, ns, name string, expectedSeq int64) error {
