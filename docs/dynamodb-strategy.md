@@ -1,49 +1,72 @@
-# DynamoDB Read/Write Strategy
+# DynamoDB Status Distribution
 
-How controllers interact with DynamoDB. Follow these patterns when writing a new controller.
+How DynamoDB status updates reach the right controller.
+
+## Overview
 
 ```mermaid
-sequenceDiagram
-    box hyperfleet-operator
-        participant C as Controller
-        participant W as Stream Watcher
+flowchart LR
+    subgraph "hyperfleet-operator"
+        CC[ClusterController]
+        NC[NodePoolController]
+        MC[ManifestController]
+        ER[EventRouter]
+        SM["Stream Manager\n(1 watcher per MC table)"]
     end
-    participant Specs as specs tables
-    participant KA as kube-applier-aws
-    participant Status as status tables
 
-    C->>Specs: UpsertDesire (in-memory cache, then hash check)
-    KA->>Specs: poll for specs
-    KA->>KA: apply/delete/read on MC
-    KA->>Status: write result
-    Status-->>W: DynamoDB Stream event (~2s)
-    W-->>C: GenericEvent via EventRouter
-    C->>Status: GetDesireStatus (consistent read)
-    C->>C: update CR status on fleet-db
+    subgraph "DynamoDB (per MC)"
+        ST["status-readdesires\nstatus-applydesires\nstatus-deletedesires"]
+    end
+
+    KA[kube-applier-aws]
+
+    KA -->|writes status| ST
+    ST -->|DynamoDB Stream| SM
+    SM -->|"Dispatch(docID)"| ER
+    ER -->|GenericEvent| CC
+    ER -->|GenericEvent| NC
+    ER -->|GenericEvent| MC
 ```
 
-## Writing specs
+## Event flow
 
-Use `UpsertApplyDesire`, `UpsertDeleteDesire`, or `UpsertReadDesire`. All three hash the spec and skip the write if unchanged, preserving the existing `updateTime`. Always use `UpsertResult.UpdateTime` when building `DesireStatusEntry`, since staleness gating compares it against the status timestamp.
+1. **kube-applier-aws** applies/deletes/reads resources on a management cluster and writes the result to the MC's DynamoDB status tables.
 
-### Write-cache
+2. **Stream Manager** runs one `Watcher` goroutine per MC per status table suffix. Each watcher tails the DynamoDB Stream (poll every 2s), extracts the `documentID` from each INSERT/MODIFY event, and calls `EventRouter.Dispatch(docID)`.
 
-The DynamoDB client keeps an in-memory cache of `{specHash, updateTime}` per desire, keyed by table and document ID. On each upsert the cache is checked first — if the hash matches, the call returns immediately without any DynamoDB read or write. On a cache miss (cold start after restart, or spec change) it falls through to the normal `GetItem` hash-check path and populates the cache from the result. `DeleteDesireSpec` clears the cache entry.
+3. **EventRouter** is a shared in-memory index mapping `documentID → {channel, CR key}`. On dispatch, it looks up the document ID and sends a `GenericEvent` into the target controller's `StatusEvents` channel (non-blocking — drops if full).
 
-Since the operator is the sole writer to the specs tables, the cache never goes stale during normal operation. On process restart the cache is empty, so the first reconcile for each desire does one `GetItem` to warm it.
+4. **Controller** receives the `GenericEvent` via `WatchesRawSource(source.Channel(...))` in `SetupWithManager`, which enqueues a reconcile for the CR. The reconcile calls `GetDesireStatus` to read the current status from DynamoDB with a consistent read.
 
-## Reading status
+## Registration
 
-Use `GetApplyDesireStatus`, `GetDeleteDesireStatus`, or `GetReadDesireStatus`. These do strongly consistent reads.
+Controllers register their document IDs with the EventRouter during reconciliation, after upserting desires:
 
-Use `CheckApplyDesireStatuses` or `CheckDeleteDesireStatuses` to check whether kube-applier has processed your specs. These compare `ObservedDesireUpdateTime` against the spec's `updateTime` to ignore stale statuses.
+```go
+r.EventRouter.Register(docID, EventTarget{
+    Channel: r.StatusEvents,
+    Key:     req.NamespacedName,
+})
+```
 
-## Removing specs
+On deletion, controllers deregister to stop receiving events:
 
-Use `DeleteDesireSpec` to remove a spec row. Always remove ApplyDesire specs before writing DeleteDesires, otherwise kube-applier may re-apply a resource you're trying to delete.
+```go
+r.EventRouter.Deregister(docID)
+```
 
-## Receiving status updates
+Each controller type has its own `StatusEvents` channel (buffered, capacity 256). All controllers share one `EventRouter` instance.
 
-Register your document IDs with the `EventRouter` during reconciliation. The stream watcher picks up status changes and sends a `GenericEvent` to your controller's `StatusEvents` channel, triggering a reconcile. See existing controllers' `SetupWithManager` for how to wire this up.
+## Replica limit
 
-Set a `RequeueAfter` as a fallback in case stream events are missed.
+The operator is currently limited to **2 replicas** due to DynamoDB Streams constraints. Each stream shard can only be read by a limited number of consumers, and the stream watcher runs on every replica — scaling beyond 2 replicas risks throttling or missed events on the stream path.
+
+## Fallback polling
+
+Stream events can be lost (shard rotation, throttling). Every successful reconcile returns `RequeueAfter: 5m` as a fallback — if no stream event arrives, the controller re-reconciles and reads status directly. Active waiting states (no placement yet, delete pending) use `RequeueAfter: 5s`.
+
+## Writing and reading specs
+
+Use `UpsertApplyDesire`, `UpsertDeleteDesire`, or `UpsertReadDesire` to write specs. The DynamoDB client keeps an in-memory hash cache per desire — if the spec hasn't changed, the write is skipped entirely (no DynamoDB call). Use `DeleteDesireSpec` to remove a spec row (always remove ApplyDesires before writing DeleteDesires).
+
+Use `GetApplyDesireStatus` / `GetDeleteDesireStatus` / `GetReadDesireStatus` for consistent reads. Use `CheckApplyDesireStatuses` / `CheckDeleteDesireStatuses` to check whether kube-applier has processed your specs — these compare `ObservedDesireUpdateTime` against the spec's `updateTime` to ignore stale statuses.

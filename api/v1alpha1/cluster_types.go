@@ -174,7 +174,8 @@ type PlacementReference struct {
 
 // Cluster is the Schema for the clusters API.
 // It represents a ROSA HCP cluster whose lifecycle is managed by the hyperfleet-operator.
-// The cluster ID is metadata.name; the owning account is metadata.namespace (AWS account ID).
+// The cluster ID is metadata.name; the namespace is also the cluster ID.
+// The owning account is spec.accountId.
 type Cluster struct {
 	metav1.TypeMeta `json:",inline"`
 

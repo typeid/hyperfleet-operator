@@ -286,12 +286,3 @@ func SpecsPrefix(mc string) string {
 func StatusPrefix(mc string) string {
 	return fmt.Sprintf("%s-status", mc)
 }
-
-// MarshalManifest serializes a Kubernetes resource struct to JSON for KubeContent.
-func MarshalManifest(obj any) ([]byte, error) {
-	data, err := json.Marshal(obj)
-	if err != nil {
-		return nil, fmt.Errorf("marshal manifest: %w", err)
-	}
-	return data, nil
-}

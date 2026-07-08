@@ -8,8 +8,9 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodbstreams"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/typeid/hyperfleet-operator/internal/mcconfig"
+	hyperfleetv1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
 )
 
 type watcherHandle struct {
@@ -22,7 +23,7 @@ type watcherHandle struct {
 type Manager struct {
 	dbClient      *dynamodb.Client
 	streamsClient *dynamodbstreams.Client
-	mcLoader      *mcconfig.Loader
+	mcReader      client.Reader
 	tableSuffixes []string
 	onChange      OnChange
 	logger        *slog.Logger
@@ -31,7 +32,7 @@ type Manager struct {
 func NewManager(
 	dbClient *dynamodb.Client,
 	streamsClient *dynamodbstreams.Client,
-	mcLoader *mcconfig.Loader,
+	mcReader client.Reader,
 	tableSuffixes []string,
 	onChange OnChange,
 	logger *slog.Logger,
@@ -39,7 +40,7 @@ func NewManager(
 	return &Manager{
 		dbClient:      dbClient,
 		streamsClient: streamsClient,
-		mcLoader:      mcLoader,
+		mcReader:      mcReader,
 		tableSuffixes: tableSuffixes,
 		onChange:      onChange,
 		logger:        logger,
@@ -73,11 +74,16 @@ func (m *Manager) Run(ctx context.Context, interval time.Duration) {
 }
 
 func (m *Manager) syncWatchers(ctx context.Context, active map[string]watcherHandle) {
-	mcs := m.mcLoader.List()
-	desired := make(map[string]struct{}, len(mcs)*len(m.tableSuffixes))
-	for _, mc := range mcs {
+	var list hyperfleetv1alpha1.ManagementClusterList
+	if err := m.mcReader.List(ctx, &list); err != nil {
+		m.logger.Error("failed to list ManagementCluster CRs", "error", err)
+		return
+	}
+
+	desired := make(map[string]struct{}, len(list.Items)*len(m.tableSuffixes))
+	for _, mc := range list.Items {
 		for _, suffix := range m.tableSuffixes {
-			desired[mc.ID+suffix] = struct{}{}
+			desired[mc.Name+suffix] = struct{}{}
 		}
 	}
 
@@ -89,20 +95,20 @@ func (m *Manager) syncWatchers(ctx context.Context, active map[string]watcherHan
 		}
 	}
 
-	for _, mc := range mcs {
-		if strings.HasPrefix(mc.ID, "test-mc-") {
+	for _, mc := range list.Items {
+		if strings.HasPrefix(mc.Name, "test-mc-") {
 			continue
 		}
 		for _, suffix := range m.tableSuffixes {
-			key := mc.ID + suffix
+			key := mc.Name + suffix
 			if _, ok := active[key]; ok {
 				continue
 			}
-			tableName := mc.ID + suffix
+			tableName := mc.Name + suffix
 			watcher := NewWatcher(m.dbClient, m.streamsClient, tableName, m.onChange, m.logger)
 			watcherCtx, cancel := context.WithCancel(ctx)
 			active[key] = watcherHandle{cancel: cancel}
-			m.logger.Info("starting status stream watcher", "mc", mc.ID, "table", tableName)
+			m.logger.Info("starting status stream watcher", "mc", mc.Name, "table", tableName)
 			go watcher.Run(watcherCtx)
 		}
 	}

@@ -37,7 +37,7 @@ var _ = Describe("NodePool Controller", func() {
 		const (
 			clusterName  = "test-np-cluster"
 			nodePoolName = "test-nodepool"
-			testNS       = "123456789012"
+			testNS       = "test-cluster-id"
 		)
 
 		ctx := context.Background()
@@ -345,7 +345,7 @@ func newTestNodePool(name, clusterRef string) *hyperfleetv1alpha1.NodePool {
 	return &hyperfleetv1alpha1.NodePool{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
-			Namespace: "123456789012",
+			Namespace: "test-cluster-id",
 		},
 		Spec: hyperfleetv1alpha1.NodePoolSpec{
 			ClusterRef: clusterRef,

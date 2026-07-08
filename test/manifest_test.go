@@ -1,6 +1,4 @@
-//go:build e2e
-
-package e2e
+package integration
 
 import (
 	. "github.com/onsi/ginkgo/v2"
@@ -9,7 +7,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"k8s.io/client-go/util/retry"
 
 	hyperfleetv1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
 	"github.com/typeid/hyperfleet-operator/internal/controller"
@@ -19,28 +17,18 @@ import (
 var _ = Describe("Manifest lifecycle", func() {
 	const (
 		manifestName = "e2e-monitoring"
-		testNS       = "111222333444"
+		testNS       = "mc01"
 	)
 
 	AfterEach(func() {
-		for _, name := range []string{manifestName, "e2e-monitoring-b"} {
-			hfm := &hyperfleetv1alpha1.Manifest{}
-			if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: name}, hfm); err == nil {
-				controllerutil.RemoveFinalizer(hfm, "hyperfleet.io/manifest")
-				_ = k8sClient.Update(ctx, hfm)
-				_ = k8sClient.Delete(ctx, hfm)
-			}
-		}
-		for _, name := range []string{manifestName, "e2e-monitoring-b"} {
-			Eventually(func() bool {
-				return k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: name}, &hyperfleetv1alpha1.Manifest{}) != nil
-			}).Should(BeTrue())
-		}
+		purgeResources()
+		purgeDynamoTables()
+		dynamoCli.ResetCache()
 	})
 
 	It("should write ApplyDesires to DynamoDB when a Manifest is created", func() {
 		By("creating a Manifest CR")
-		hfm := newE2EManifest(manifestName)
+		hfm := newTestManifest(manifestName)
 		Expect(k8sClient.Create(ctx, hfm)).To(Succeed())
 
 		By("waiting for ApplyDesires to appear in DynamoDB")
@@ -98,23 +86,28 @@ var _ = Describe("Manifest lifecycle", func() {
 
 	It("should update ApplyDesires when content changes", func() {
 		By("creating a Manifest CR")
-		hfm := newE2EManifest(manifestName)
+		hfm := newTestManifest(manifestName)
 		Expect(k8sClient.Create(ctx, hfm)).To(Succeed())
 
-		By("waiting for initial ApplyDesires")
+		By("waiting for initial reconcile to complete")
 		specsTable := mc + "-specs-applydesires"
 		Eventually(func(g Gomega) {
-			items := scanTable(specsTable)
-			g.Expect(len(items)).To(BeNumerically(">=", 4))
+			var h hyperfleetv1alpha1.Manifest
+			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &h)).To(Succeed())
+			g.Expect(h.Status.Phase).To(Equal(hyperfleetv1alpha1.ManifestPhaseApplied))
 		}).Should(Succeed())
 
 		By("updating Job image")
-		var toUpdate hyperfleetv1alpha1.Manifest
-		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &toUpdate)).To(Succeed())
-		toUpdate.Spec.Resources[3].Content = runtime.RawExtension{
-			Raw: []byte(`{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"e2e-job-abc123","namespace":"e2e-actions"},"spec":{"template":{"spec":{"serviceAccountName":"e2e-runner","containers":[{"name":"runner","image":"registry.example.com/e2e-runner:v2"}],"restartPolicy":"Never"}}}}`),
-		}
-		Expect(k8sClient.Update(ctx, &toUpdate)).To(Succeed())
+		Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			var toUpdate hyperfleetv1alpha1.Manifest
+			if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &toUpdate); err != nil {
+				return err
+			}
+			toUpdate.Spec.Resources[3].Content = runtime.RawExtension{
+				Raw: []byte(`{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"e2e-job-abc123","namespace":"e2e-actions"},"spec":{"template":{"spec":{"serviceAccountName":"e2e-runner","containers":[{"name":"runner","image":"registry.example.com/e2e-runner:v2"}],"restartPolicy":"Never"}}}}`),
+			}
+			return k8sClient.Update(ctx, &toUpdate)
+		})).To(Succeed())
 
 		By("verifying updated content in DynamoDB")
 		Eventually(func(g Gomega) {
@@ -132,7 +125,7 @@ var _ = Describe("Manifest lifecycle", func() {
 
 	It("should write DeleteDesires and clean up when Manifest is deleted", func() {
 		By("creating a Manifest CR")
-		hfm := newE2EManifest(manifestName)
+		hfm := newTestManifest(manifestName)
 		Expect(k8sClient.Create(ctx, hfm)).To(Succeed())
 
 		By("waiting for Applied status")
@@ -176,8 +169,8 @@ var _ = Describe("Manifest lifecycle", func() {
 
 	It("should not collide when two Manifests deploy the same resource", func() {
 		By("creating two Manifest CRs deploying the same namespace")
-		hfmA := newE2EManifest(manifestName)
-		hfmB := newE2EManifest("e2e-monitoring-b")
+		hfmA := newTestManifest(manifestName)
+		hfmB := newTestManifest("e2e-monitoring-b")
 		Expect(k8sClient.Create(ctx, hfmA)).To(Succeed())
 		Expect(k8sClient.Create(ctx, hfmB)).To(Succeed())
 
@@ -228,7 +221,7 @@ var _ = Describe("Manifest lifecycle", func() {
 
 	It("should write ReadDesires for watched resources and populate resourceStatuses", func() {
 		By("creating a Manifest with a watched Job")
-		hfm := newE2EManifest(manifestName)
+		hfm := newTestManifest(manifestName)
 		Expect(k8sClient.Create(ctx, hfm)).To(Succeed())
 
 		By("verifying ReadDesire appears in DynamoDB")
@@ -253,7 +246,7 @@ var _ = Describe("Manifest lifecycle", func() {
 			g.Expect(updated.Status.ResourceStatuses).To(HaveLen(1))
 			g.Expect(updated.Status.ResourceStatuses[0].Resource).To(Equal("jobs"))
 			g.Expect(updated.Status.ResourceStatuses[0].Name).To(Equal("e2e-job-abc123"))
-			g.Expect(string(updated.Status.ResourceStatuses[0].Status.Raw)).To(ContainSubstring(`"succeeded":1`))
+			g.Expect(string(updated.Status.ResourceStatuses[0].Status.Raw)).To(ContainSubstring(`"succeeded": 1`))
 		}).Should(Succeed())
 	})
 })

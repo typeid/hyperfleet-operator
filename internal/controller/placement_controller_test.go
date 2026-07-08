@@ -18,30 +18,41 @@ package controller
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	hyperfleetv1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
-	"github.com/typeid/hyperfleet-operator/internal/mcconfig"
 )
 
 var _ = Describe("Placement Controller", func() {
 	Context("When reconciling a Cluster", func() {
 		const (
 			clusterName = "test-placement-cluster"
-			testNS      = "123456789012"
+			testNS      = "test-cluster-id"
 		)
 
 		ctx := context.Background()
 
+		const mcName = "mc01"
+
 		BeforeEach(func() {
 			ensureNamespace(ctx, testNS)
+			mc := &hyperfleetv1alpha1.ManagementCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: mcName},
+				Spec: hyperfleetv1alpha1.ManagementClusterSpec{
+					Region:    "us-east-1",
+					AccountID: "123456789012",
+				},
+			}
+			err := k8sClient.Create(ctx, mc)
+			if err != nil {
+				Expect(err.Error()).To(ContainSubstring("already exists"))
+			}
 		})
 
 		AfterEach(func() {
@@ -61,18 +72,12 @@ var _ = Describe("Placement Controller", func() {
 			resource := newTestCluster(clusterName)
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 
-			mcFile := filepath.Join(os.TempDir(), "placement-test-mc.yaml")
-			Expect(os.WriteFile(mcFile, []byte("- id: mc01\n  region: us-east-1\n  accountId: \"123456789012\"\n"), 0644)).To(Succeed())
-			mcLoader, err := mcconfig.NewLoaderFromFile(mcFile)
-			Expect(err).NotTo(HaveOccurred())
-
 			reconciler := &PlacementReconciler{
-				Client:   k8sClient,
-				Scheme:   k8sClient.Scheme(),
-				MCConfig: mcLoader,
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
 			}
 
-			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Namespace: testNS, Name: clusterName},
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -80,7 +85,7 @@ var _ = Describe("Placement Controller", func() {
 			var placement hyperfleetv1alpha1.Placement
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: clusterName + "-placement"}, &placement)).To(Succeed())
 			Expect(placement.Spec.ClusterRef).To(Equal(clusterName))
-			Expect(placement.Spec.ManagementCluster).To(Equal("mc01"))
+			Expect(placement.Spec.ManagementCluster).To(Equal(mcName))
 			Expect(placement.Status.Phase).To(Equal(hyperfleetv1alpha1.PlacementPhaseBound))
 		})
 
@@ -88,18 +93,12 @@ var _ = Describe("Placement Controller", func() {
 			resource := newTestCluster(clusterName)
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 
-			mcFile := filepath.Join(os.TempDir(), "placement-test-mc2.yaml")
-			Expect(os.WriteFile(mcFile, []byte("- id: mc01\n  region: us-east-1\n  accountId: \"123456789012\"\n"), 0644)).To(Succeed())
-			mcLoader, err := mcconfig.NewLoaderFromFile(mcFile)
-			Expect(err).NotTo(HaveOccurred())
-
 			reconciler := &PlacementReconciler{
-				Client:   k8sClient,
-				Scheme:   k8sClient.Scheme(),
-				MCConfig: mcLoader,
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
 			}
 
-			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Namespace: testNS, Name: clusterName},
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -107,7 +106,7 @@ var _ = Describe("Placement Controller", func() {
 			var cluster hyperfleetv1alpha1.Cluster
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: clusterName}, &cluster)).To(Succeed())
 			Expect(cluster.Status.PlacementRef).NotTo(BeNil())
-			Expect(cluster.Status.PlacementRef.ManagementCluster).To(Equal("mc01"))
+			Expect(cluster.Status.PlacementRef.ManagementCluster).To(Equal(mcName))
 		})
 	})
 })

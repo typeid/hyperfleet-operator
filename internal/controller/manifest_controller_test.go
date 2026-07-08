@@ -38,7 +38,7 @@ var _ = Describe("Manifest Controller", func() {
 	Context("When reconciling a Manifest (ZOA deploy)", func() {
 		const (
 			manifestName = "test-monitoring"
-			testNS       = "123456789012"
+			testNS       = "mc01"
 		)
 
 		ctx := context.Background()
@@ -644,7 +644,7 @@ func newTestManifest(name string) *hyperfleetv1alpha1.Manifest {
 	return &hyperfleetv1alpha1.Manifest{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
-			Namespace: "123456789012",
+			Namespace: "mc01",
 		},
 		Spec: hyperfleetv1alpha1.ManifestSpec{
 			ManagementCluster: "mc01",
@@ -676,7 +676,7 @@ func newTestManifestUnwatched(name string) *hyperfleetv1alpha1.Manifest {
 	return &hyperfleetv1alpha1.Manifest{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
-			Namespace: "123456789012",
+			Namespace: "mc01",
 		},
 		Spec: hyperfleetv1alpha1.ManifestSpec{
 			ManagementCluster: "mc01",

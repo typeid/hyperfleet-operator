@@ -4,47 +4,48 @@
 
 The **cluster ID** is `metadata.name` on the Cluster CR. The owning AWS account is `metadata.namespace` (the account ID, e.g., `123456789012`). All related resources (NodePool, Placement) must be in the same namespace as their parent Cluster.
 
-In future, a regional DynamoDB table will guarantee cluster ID uniqueness across fleet-db shards. For now, with a single fleet-db instance, uniqueness is enforced by the kube-apiserver.
+Cluster ID uniqueness is enforced by PostgreSQL's unique constraint on `(gvk, namespace, name)`.
 
 ## Creation Flow
 
 ```mermaid
 sequenceDiagram
     participant API as Platform API
-    participant FDB as fleet-db
+    participant PG as PostgreSQL
     participant PC as Placement Controller
     participant CC as Cluster Controller
     participant DDB as DynamoDB
     participant KA as kube-applier-aws
     participant MC as Management Cluster
 
-    API->>FDB: Create Cluster CR
-    CC->>FDB: Watch detects new Cluster
-    CC->>FDB: Add finalizer (hyperfleet.io/operator), requeue
-    CC->>FDB: Set phase=WaitingForPlacement, requeue
-    PC->>FDB: Watch detects Cluster without Placement
-    PC->>FDB: Create Placement CR (mc=mc01, phase=Bound)
-    CC->>FDB: Detect Bound Placement
+    API->>PG: Create Cluster CR
+    CC->>PG: Watch detects new Cluster
+    CC->>PG: Add finalizer (hyperfleet.io/cluster), requeue
+    CC->>PG: Set phase=WaitingForPlacement, requeue
+    PC->>PG: Watch detects Cluster without Placement
+    PC->>PG: Create Placement CR (mc=mc01, phase=Bound)
+    CC->>PG: Detect Bound Placement
     CC->>CC: Generate 7 manifests
     CC->>DDB: Write 7 ApplyDesires (specs table)
     CC->>DDB: Write 1 ReadDesire for HostedCluster status
-    CC->>FDB: Set phase=Provisioning
+    CC->>PG: Set phase=Provisioning
     KA->>DDB: Read ApplyDesires (specs table)
     KA->>MC: Apply resources (Namespace, HostedCluster, etc.)
     KA->>DDB: Write status (status table)
-    CC->>DDB: Read status feedback (every 30s)
-    CC->>FDB: Update Cluster status (conditions, endpoint, version)
+    DDB-->>CC: DynamoDB Stream event via EventRouter (~2s)
+    CC->>DDB: Read status (consistent read)
+    CC->>PG: Update Cluster status (conditions, endpoint, version)
 ```
 
 ### Reconcile Steps
 
-1. **Finalizer**: Adds `hyperfleet.io/operator` finalizer on first reconcile, requeues
+1. **Finalizer**: Adds `hyperfleet.io/cluster` finalizer on first reconcile, requeues
 2. **Placement lookup**: Waits for a Bound Placement (created by Placement controller)
 3. **Manifest generation**: Generates 7 Kubernetes manifests (see below)
 4. **ApplyDesires**: Writes one ApplyDesire per manifest to `{mc}-specs-applydesires`
 5. **ReadDesire**: Creates a ReadDesire for the HostedCluster to get status feedback
 6. **Status propagation**: Reads status from DynamoDB, propagates conditions/endpoint/version to Cluster CR
-7. **Requeue**: Requeues every 30s for status refresh
+7. **Requeue**: Requeues every 5 minutes as a fallback; DynamoDB Streams via EventRouter provides the primary notification path (~2s latency)
 
 ### Generated Resources
 
@@ -78,19 +79,19 @@ Deletion follows a strict ordering: NodePools first, then HostedCluster (so Hype
 ```mermaid
 sequenceDiagram
     participant User as User/API
-    participant FDB as fleet-db
+    participant PG as PostgreSQL
     participant CC as Cluster Controller
     participant NPC as NodePool Controller
     participant DDB as DynamoDB
 
-    User->>FDB: Delete Cluster CR (sets DeletionTimestamp)
-    CC->>FDB: Detect DeletionTimestamp, set phase=Deleting
+    User->>PG: Delete Cluster CR (sets DeletionTimestamp)
+    CC->>PG: Detect DeletionTimestamp, set phase=Deleting
 
     Note over CC: Step 1 — Delete associated NodePools
-    CC->>FDB: List NodePools in same namespace where clusterRef=clusterID
-    CC->>FDB: Delete each NodePool CR
+    CC->>PG: List NodePools in same namespace where clusterRef=clusterID
+    CC->>PG: Delete each NodePool CR
     NPC->>DDB: NodePool finalizer cleans up ApplyDesire, writes DeleteDesire
-    NPC->>FDB: Remove NodePool finalizer → CR deleted
+    NPC->>PG: Remove NodePool finalizer → CR deleted
     CC->>CC: Requeue until all NodePools are gone
 
     Note over CC: Step 2 — Clean up ApplyDesires
@@ -108,10 +109,10 @@ sequenceDiagram
     CC->>DDB: Delete ReadDesire spec for HostedCluster
 
     Note over CC: Step 5 — Delete Placement
-    CC->>FDB: Delete Placement CR
+    CC->>PG: Delete Placement CR
 
     Note over CC: Step 6 — Remove finalizer
-    CC->>FDB: Remove finalizer → Cluster CR deleted
+    CC->>PG: Remove finalizer → Cluster CR deleted
 ```
 
 ### Deletion Steps
@@ -121,4 +122,4 @@ sequenceDiagram
 3. **HostedCluster DeleteDesire**: Writes a DeleteDesire for the HostedCluster resource and waits for confirmation. Deleting the HostedCluster first allows HyperShift to clean up worker nodes and load balancers before the namespace is removed.
 4. **Namespace DeleteDesire**: Writes a DeleteDesire for `clusters-{clusterID}`, cascading all remaining MC resources. After confirmation, deletes the HostedCluster ReadDesire spec from DynamoDB.
 5. **Placement cleanup**: Deletes the Placement CR (last, after MC resources are confirmed gone).
-6. **Finalizer removal**: Removes the `hyperfleet.io/operator` finalizer, allowing Kubernetes to complete the CR deletion.
+6. **Finalizer removal**: Removes the `hyperfleet.io/cluster` finalizer, allowing Kubernetes to complete the CR deletion.

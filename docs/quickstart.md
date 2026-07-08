@@ -1,50 +1,46 @@
 # Quickstart
 
-Deploy the hyperfleet-operator on a Regional Cluster (EKS) and connect it to fleet-db and DynamoDB.
+Deploy the hyperfleet-operator and connect it to PostgreSQL and DynamoDB.
 
 ## Prerequisites
 
-- An EKS cluster to run the operator (the Regional Cluster)
-- A fleet-db EKS cluster (workerless, kube-apiserver only)
+- A PostgreSQL database (14+)
 - DynamoDB tables for each management cluster
-- An IAM role for the operator with permissions described below
+- An IAM role for the operator with DynamoDB permissions described below
 
-## 1. IAM Role
+## 1. PostgreSQL
 
-Create an IAM role that the operator's ServiceAccount will assume via [EKS Pod Identity](https://docs.aws.amazon.com/eks/latest/userguide/pod-identities.html) or IRSA. The role needs two sets of permissions:
+The operator stores all Custom Resources in PostgreSQL via pgruntime. Create a database and provide the connection string via the `POSTGRES_DSN` environment variable:
 
-### EKS (fleet-db access)
-
-The operator calls `DescribeCluster` to discover fleet-db's API endpoint and CA, then authenticates using presigned STS tokens.
-
-```json
-{
-  "Effect": "Allow",
-  "Action": ["eks:DescribeCluster"],
-  "Resource": "arn:aws:eks:<region>:<account>:cluster/<fleet-db-cluster-name>"
-}
+```
+postgres://user:password@host:5432/hyperfleet?sslmode=require
 ```
 
-Register this role as an [EKS access entry](https://docs.aws.amazon.com/eks/latest/userguide/access-entries.html) on the fleet-db cluster with Kubernetes RBAC permissions for the `hyperfleet.io` API group (the CRDs the operator watches and manages).
+pgruntime runs schema migrations automatically on startup.
+
+## 2. IAM Role
+
+Create an IAM role that the operator's ServiceAccount will assume via [EKS Pod Identity](https://docs.aws.amazon.com/eks/latest/userguide/pod-identities.html) or IRSA.
 
 ### DynamoDB
 
 Per management cluster, there are 6 tables. The operator writes to specs tables and reads from status tables:
 
-| Action            | Tables                                                                                           |
-| ----------------- | ------------------------------------------------------------------------------------------------ |
-| `dynamodb:PutItem` | `{mc}-specs-applydesires`, `{mc}-specs-deletedesires`, `{mc}-specs-readdesires`                  |
-| `dynamodb:GetItem` | `{mc}-status-applydesires`, `{mc}-status-deletedesires`, `{mc}-status-readdesires`               |
+| Action                      | Tables                                                                                                        |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `dynamodb:PutItem`          | `{mc}-specs-applydesires`, `{mc}-specs-deletedesires`, `{mc}-specs-readdesires`                               |
+| `dynamodb:DeleteItem`       | `{mc}-specs-applydesires`, `{mc}-specs-deletedesires`, `{mc}-specs-readdesires`                               |
+| `dynamodb:GetItem`          | `{mc}-specs-applydesires`, `{mc}-status-applydesires`, `{mc}-status-deletedesires`, `{mc}-status-readdesires` |
+| `dynamodb:DescribeTable`    | `{mc}-status-applydesires`, `{mc}-status-readdesires`                                                         |
+| `dynamodb:DescribeStream`   | `{mc}-status-applydesires`, `{mc}-status-readdesires` (stream ARN)                                            |
+| `dynamodb:GetShardIterator` | `{mc}-status-applydesires`, `{mc}-status-readdesires` (stream ARN)                                            |
+| `dynamodb:GetRecords`       | `{mc}-status-applydesires`, `{mc}-status-readdesires` (stream ARN)                                            |
 
-The role should **not** have write access to status tables or read access to specs tables — that is kube-applier-aws's domain.
+The operator also needs `GetItem` on its own specs tables (for the write-through cache hash check). The role should **not** have write access to status tables — that is kube-applier-aws's domain.
 
-### STS (token generation)
+## 3. DynamoDB Tables
 
-The operator presigns `sts:GetCallerIdentity` requests as bearer tokens for EKS authentication. The IAM role must be allowed to call STS (this is typically already permitted by default).
-
-## 2. DynamoDB Tables
-
-Create 6 DynamoDB tables per management cluster in the **regional account**, each with a single string partition key `documentID`:
+Create 6 DynamoDB tables per management cluster, each with a single string partition key `documentID`:
 
 ```
 {mc}-specs-applydesires
@@ -57,26 +53,7 @@ Create 6 DynamoDB tables per management cluster in the **regional account**, eac
 
 Use on-demand billing (`PAY_PER_REQUEST`).
 
-Tables live in the regional account so the operator accesses DynamoDB locally. Each kube-applier-aws instance on a management cluster assumes a cross-account role to read specs and write statuses back.
-
-## 3. fleet-db EKS Access Entry
-
-The operator authenticates to fleet-db using IAM. Register the operator's IAM role as an access entry on the fleet-db cluster:
-
-```bash
-aws eks create-access-entry \
-  --cluster-name <fleet-db-cluster-name> \
-  --principal-arn <operator-iam-role-arn> \
-  --type STANDARD
-
-aws eks associate-access-policy \
-  --cluster-name <fleet-db-cluster-name> \
-  --principal-arn <operator-iam-role-arn> \
-  --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy \
-  --access-scope type=cluster
-```
-
-CRDs are namespace-scoped under the customer's AWS account ID. The operator needs access to all namespaces on fleet-db (one per account). For production, scope the access policy to only the `hyperfleet.io` API group using a custom Kubernetes RBAC ClusterRole and binding instead of the cluster admin policy.
+Enable DynamoDB Streams (NEW_AND_OLD_IMAGES) on the status tables so the operator receives status updates from kube-applier-aws.
 
 ## 4. Install the Helm Chart
 
@@ -84,48 +61,46 @@ CRDs are namespace-scoped under the customer's AWS account ID. The operator need
 helm install hyperfleet-operator charts/hyperfleet-operator \
   --namespace hyperfleet-operator --create-namespace \
   --set awsRegion=us-east-1 \
-  --set fleetDBClusterName=fleet-db-prod \
-  --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=arn:aws:iam::<account>:role/<operator-role>
+  --set baseDomain=example.com
 ```
 
 ### Required Values
 
-| Value              | Description                                         |
-| ------------------ | --------------------------------------------------- |
-| `awsRegion`        | AWS region for DynamoDB and EKS DescribeCluster      |
-| `fleetDBClusterName` | EKS cluster name for fleet-db                      |
+| Value        | Description                  |
+| ------------ | ---------------------------- |
+| `awsRegion`  | AWS region for DynamoDB      |
+| `baseDomain` | DNS base domain for clusters |
 
 ### Optional Values
 
-| Value                        | Default                                          | Description                          |
-| ---------------------------- | ------------------------------------------------ | ------------------------------------ |
-| `image.repository`           | `quay.io/cbusse_openshift/hyperfleet-operator`   | Container image                      |
-| `image.tag`                  | `latest`                                         | Image tag                            |
-| `leaderElection.enabled`     | `true`                                           | Enable leader election               |
-| `serviceAccount.annotations` | `{}`                                             | SA annotations (set IAM role ARN)    |
-| `replicaCount`               | `1`                                              | Number of replicas                   |
+| Value                        | Default                                        | Description                                          |
+| ---------------------------- | ---------------------------------------------- | ---------------------------------------------------- |
+| `image.repository`           | `quay.io/cbusse_openshift/hyperfleet-operator` | Container image                                      |
+| `image.tag`                  | `latest`                                       | Image tag                                            |
+| `serviceAccount.annotations` | `{}`                                           | SA annotations (set IAM role ARN)                    |
+| `replicaCount`               | `1`                                            | Number of replicas                                   |
+| `hyperfleetdb.bucketCount`   | `1`                                            | Sharding buckets (must be divisible by replicaCount) |
 
-## 5. Install CRDs
+## 5. Create a ManagementCluster
 
-The operator's CRDs must be installed on fleet-db (not on the Regional Cluster where the operator runs):
+Register management clusters by creating ManagementCluster CRs (the operator reads these from PostgreSQL):
 
-```bash
-kubectl apply --kubeconfig <fleet-db-kubeconfig> -f charts/hyperfleet-operator/crds/
+```yaml
+apiVersion: hyperfleet.io/v1alpha1
+kind: ManagementCluster
+metadata:
+  name: mc01
+spec:
+  region: us-east-1
+  accountId: "123456789012"
 ```
-
-Or deploy them via ArgoCD targeting the fleet-db cluster.
 
 ## Verify
 
 Check the operator logs:
 
 ```bash
-kubectl logs -n hyperfleet-operator deploy/hyperfleet-operator -f
+kubectl logs -n hyperfleet-operator sts/hyperfleet-operator -f
 ```
 
-Create a test Cluster CR on fleet-db (namespace = AWS account ID) and verify the operator creates a Placement and writes ApplyDesires to DynamoDB:
-
-```bash
-kubectl get clusters.hyperfleet.io -n <account-id> --kubeconfig <fleet-db-kubeconfig>
-kubectl get placements.hyperfleet.io -n <account-id> --kubeconfig <fleet-db-kubeconfig>
-```
+Create a test Cluster CR (namespace = AWS account ID) and verify the operator creates a Placement and writes ApplyDesires to DynamoDB.

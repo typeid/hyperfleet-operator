@@ -1,4 +1,4 @@
-replicaCount: 1
+replicaCount: 2
 
 image:
   repository: quay.io/cbusse_openshift/hyperfleet-operator
@@ -6,11 +6,14 @@ image:
   pullPolicy: IfNotPresent
 
 awsRegion: ""
-fleetDBClusterName: ""
 baseDomain: ""
 
-leaderElection:
-  enabled: true
+postgres:
+  secretName: postgres-dsn
+  secretKey: dsn
+
+hyperfleetdb:
+  bucketCount: 1
 
 serviceAccount:
   create: true
