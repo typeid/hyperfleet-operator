@@ -120,8 +120,11 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, fmt.Errorf("render cluster resources: %w", err)
 	}
 
-	hcName := cluster.Spec.Name
-	hcNs := fmt.Sprintf("clusters-%s", cluster.Name)
+	clusterID := render.ClusterIDFromNamespace(cluster.Namespace)
+	clusterName := cluster.Name // human-readable
+
+	hcName := clusterName
+	hcNs := cluster.Namespace
 	readDocID := dynamo.NewDocumentID(taskKey+"-read", "hypershift.openshift.io", "v1beta1", "hostedclusters", hcNs, hcName)
 
 	// Upsert ApplyDesires in parallel — no-op when content matches.
@@ -145,7 +148,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				DynamoDBMetadata: dynamo.DynamoDBMetadata{DocumentID: docID},
 				Spec: dynamo.ApplyDesireSpec{
 					ManagementCluster: mc,
-					ClusterID:         cluster.Name,
+					ClusterID:         clusterID,
 					TargetItem: dynamo.ResourceReference{
 						Group:     m.Group,
 						Version:   m.Version,
@@ -177,7 +180,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			DynamoDBMetadata: dynamo.DynamoDBMetadata{DocumentID: readDocID},
 			Spec: dynamo.ReadDesireSpec{
 				ManagementCluster: mc,
-				ClusterID:         cluster.Name,
+				ClusterID:         clusterID,
 				TargetItem: dynamo.ResourceReference{
 					Group:     "hypershift.openshift.io",
 					Version:   "v1beta1",
@@ -253,9 +256,6 @@ func (r *ClusterReconciler) reconcileDelete(ctx context.Context, cluster *hyperf
 	pendingNodePools := 0
 	for i := range nodePools.Items {
 		np := &nodePools.Items[i]
-		if np.Spec.ClusterRef != cluster.Name {
-			continue
-		}
 		if np.DeletionTimestamp.IsZero() {
 			log.Info("Deleting NodePool", "nodePool", np.Name)
 			if err := r.Delete(ctx, np); err != nil && !apierrors.IsNotFound(err) {
@@ -265,10 +265,13 @@ func (r *ClusterReconciler) reconcileDelete(ctx context.Context, cluster *hyperf
 		pendingNodePools++
 	}
 
+	clusterID := render.ClusterIDFromNamespace(cluster.Namespace)
+	clusterName := cluster.Name // human-readable
+
 	specsPrefix := dynamo.SpecsPrefix(mc)
 	statusPrefix := dynamo.StatusPrefix(mc)
-	ns := fmt.Sprintf("clusters-%s", cluster.Name)
-	hcName := cluster.Spec.Name
+	ns := cluster.Namespace
+	hcName := clusterName
 
 	// Remove all ApplyDesire specs to prevent kube-applier from racing
 	// and re-applying resources that are being deleted.
@@ -298,7 +301,7 @@ func (r *ClusterReconciler) reconcileDelete(ctx context.Context, cluster *hyperf
 	}
 
 	// Write the HostedCluster DeleteDesire and check its status.
-	hcResult, err := r.writeAndWaitDeleteDesire(ctx, specsPrefix, statusPrefix, mc, cluster.Name, hcRef)
+	hcResult, err := r.writeAndWaitDeleteDesire(ctx, specsPrefix, statusPrefix, mc, clusterID, hcRef)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("delete hostedcluster: %w", err)
 	}
@@ -317,7 +320,7 @@ func (r *ClusterReconciler) reconcileDelete(ctx context.Context, cluster *hyperf
 	}
 
 	// Step 3: Delete the cluster namespace to clean up all remaining resources.
-	if result, err := r.writeAndWaitDeleteDesire(ctx, specsPrefix, statusPrefix, mc, cluster.Name, nsRef); err != nil || !result.IsZero() {
+	if result, err := r.writeAndWaitDeleteDesire(ctx, specsPrefix, statusPrefix, mc, clusterID, nsRef); err != nil || !result.IsZero() {
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("delete namespace: %w", err)
 		}
@@ -520,13 +523,13 @@ func (r *ClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				if !ok {
 					return nil
 				}
-				if placement.Spec.ClusterRef == "" {
+				if placement.Spec.ClusterName == "" {
 					return nil
 				}
 				return []reconcile.Request{
 					{NamespacedName: types.NamespacedName{
 						Namespace: placement.Namespace,
-						Name:      placement.Spec.ClusterRef,
+						Name:      placement.Spec.ClusterName,
 					}},
 				}
 			},

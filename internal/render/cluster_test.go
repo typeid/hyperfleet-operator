@@ -4,38 +4,57 @@ import (
 	"testing"
 
 	hypershiftv1beta1 "github.com/openshift/hypershift/api/hypershift/v1beta1"
+	"github.com/openshift/hypershift/api/util/ipnet"
 	hyperfleetv1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 )
+
+func mustParseCIDR(s string) ipnet.IPNet {
+	parsed, err := ipnet.ParseCIDR(s)
+	if err != nil {
+		panic(err)
+	}
+	return *parsed
+}
 
 func testCluster() *hyperfleetv1alpha1.Cluster {
 	return &hyperfleetv1alpha1.Cluster{
-		ObjectMeta: metav1.ObjectMeta{Name: "abc12345"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-cluster",
+			Namespace: "cluster-abc12345",
+		},
 		Spec: hyperfleetv1alpha1.ClusterSpec{
-			Name:             "my-cluster",
-			AccountID:        "123456789012",
-			Region:           "us-east-1",
-			VpcID:            "vpc-abc",
-			PrivateSubnetIDs: []string{"subnet-1"},
-			OIDCIssuerURL:    "https://oidc.example.com/abc12345",
-			Release:          hypershiftv1beta1.Release{Image: "quay.io/ocp:4.17"},
-			CreatorARN:       "arn:aws:iam::123456789012:user/admin",
-			Networking: hyperfleetv1alpha1.NetworkingSpec{
-				ClusterNetwork: []hyperfleetv1alpha1.NetworkEntry{{CIDR: "10.128.0.0/14"}},
-				ServiceNetwork: []hyperfleetv1alpha1.NetworkEntry{{CIDR: "172.30.0.0/16"}},
-				MachineNetwork: []hyperfleetv1alpha1.NetworkEntry{{CIDR: "10.0.0.0/16"}},
-			},
-			Platform: hyperfleetv1alpha1.PlatformSpec{
-				AWS: hyperfleetv1alpha1.AWSPlatformSpec{
-					Roles: hypershiftv1beta1.AWSRolesRef{
-						ControlPlaneOperatorARN: "arn:cpo",
-						IngressARN:              "arn:ingress",
-						ImageRegistryARN:        "arn:registry",
-						KubeCloudControllerARN:  "arn:kccm",
-						NodePoolManagementARN:   "arn:npm",
-						NetworkARN:              "arn:network",
-						StorageARN:              "arn:storage",
+			CreatorARN: "arn:aws:iam::123456789012:user/admin",
+			HostedCluster: hypershiftv1beta1.HostedClusterSpec{
+				Release: hypershiftv1beta1.Release{Image: "quay.io/ocp:4.17"},
+				IssuerURL: "https://oidc.example.com/abc12345",
+				Networking: hypershiftv1beta1.ClusterNetworking{
+					ClusterNetwork: []hypershiftv1beta1.ClusterNetworkEntry{{CIDR: mustParseCIDR("10.128.0.0/14")}},
+					ServiceNetwork: []hypershiftv1beta1.ServiceNetworkEntry{{CIDR: mustParseCIDR("172.30.0.0/16")}},
+					MachineNetwork: []hypershiftv1beta1.MachineNetworkEntry{{CIDR: mustParseCIDR("10.0.0.0/16")}},
+				},
+				Platform: hypershiftv1beta1.PlatformSpec{
+					Type: hypershiftv1beta1.AWSPlatform,
+					AWS: &hypershiftv1beta1.AWSPlatformSpec{
+						Region: "us-east-1",
+						CloudProviderConfig: &hypershiftv1beta1.AWSCloudProviderConfig{
+							VPC:  "vpc-abc",
+							Zone: "us-east-1a",
+							Subnet: &hypershiftv1beta1.AWSResourceReference{
+								ID: ptr.To("subnet-1"),
+							},
+						},
+						RolesRef: hypershiftv1beta1.AWSRolesRef{
+							ControlPlaneOperatorARN: "arn:cpo",
+							IngressARN:              "arn:ingress",
+							ImageRegistryARN:        "arn:registry",
+							KubeCloudControllerARN:  "arn:kccm",
+							NodePoolManagementARN:   "arn:npm",
+							NetworkARN:              "arn:network",
+							StorageARN:              "arn:storage",
+						},
 					},
 				},
 			},
@@ -70,7 +89,7 @@ func TestClusterResourcesTypes(t *testing.T) {
 		resource string
 		name     string
 	}{
-		{"namespaces", "clusters-abc12345"},
+		{"namespaces", "cluster-abc12345"},
 		{"configmaps", "cluster-config"},
 		{"configmaps", "aws-iam-auth-config"},
 		{"externalsecrets", "pull-secret"},

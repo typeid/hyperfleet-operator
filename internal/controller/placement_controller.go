@@ -29,7 +29,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -38,7 +37,7 @@ import (
 )
 
 const (
-	placementOwnerKey = ".spec.clusterRef"
+	placementOwnerKey = ".spec.clusterName"
 )
 
 // PlacementReconciler watches Cluster CRs and ensures each has a Placement.
@@ -86,12 +85,9 @@ func (r *PlacementReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 				Namespace: cluster.Namespace,
 			},
 			Spec: hyperfleetv1alpha1.PlacementSpec{
-				ClusterRef:        cluster.Name,
+				ClusterName:        cluster.Name,
 				ManagementCluster: mc,
 			},
-		}
-		if err := controllerutil.SetOwnerReference(&cluster, &placement, r.Scheme); err != nil {
-			return ctrl.Result{}, fmt.Errorf("set owner reference: %w", err)
 		}
 		if err := r.Create(ctx, &placement); err != nil {
 			if apierrors.IsAlreadyExists(err) {
@@ -177,13 +173,13 @@ func (r *PlacementReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				if !ok {
 					return nil
 				}
-				if placement.Spec.ClusterRef == "" {
+				if placement.Spec.ClusterName == "" {
 					return nil
 				}
 				return []reconcile.Request{
 					{NamespacedName: types.NamespacedName{
 						Namespace: placement.Namespace,
-						Name:      placement.Spec.ClusterRef,
+						Name:      placement.Spec.ClusterName,
 					}},
 				}
 			},

@@ -17,7 +17,7 @@ import (
 var _ = Describe("Cluster lifecycle", func() {
 	const (
 		clusterName = "e2e-test-01"
-		testNS      = "e2e-cluster-id"
+		testNS      = "cluster-e2e-cluster-id"
 	)
 
 	AfterEach(func() {
@@ -56,12 +56,12 @@ var _ = Describe("Cluster lifecycle", func() {
 		}
 
 		expectedResources := []string{
-			"namespaces/clusters-" + clusterName,
+			"namespaces/" + testNS,
 			"configmaps/cluster-config",
 			"configmaps/aws-iam-auth-config",
 			"externalsecrets/pull-secret",
 			"certificates/api-serving-cert",
-			"hostedclusters/my-e2e-cluster",
+			"hostedclusters/" + clusterName,
 			"secrets/ssh-key",
 		}
 		for _, expected := range expectedResources {
@@ -83,7 +83,7 @@ var _ = Describe("Cluster lifecycle", func() {
 
 		spec := hcContent["spec"].(map[string]any)
 		Expect(spec["issuerURL"]).To(Equal("https://oidc.e2e.example.com/e2e-test-01"))
-		Expect(spec["infraID"]).To(Equal(clusterName))
+		Expect(spec["infraID"]).To(Equal("e2e-cluster-id"))
 
 		dns := spec["dns"].(map[string]any)
 		Expect(dns["baseDomain"]).To(Equal("e2e-.0.e2e.example.com"))
@@ -98,7 +98,7 @@ var _ = Describe("Cluster lifecycle", func() {
 		}).Should(Succeed())
 
 		By("verifying document IDs are deterministic")
-		nsDocID := dynamo.NewDocumentID("hyperfleet-operator", "", "v1", "namespaces", "", "clusters-"+clusterName)
+		nsDocID := dynamo.NewDocumentID("hyperfleet-operator", "", "v1", "namespaces", "", testNS)
 		found := false
 		for _, item := range items {
 			if docID, ok := item["documentID"]; ok {
@@ -188,7 +188,7 @@ var _ = Describe("Cluster lifecycle", func() {
 		}).Should(Succeed())
 
 		By("creating a NodePool CR")
-		np := newTestNodePool(clusterName)
+		np := newTestNodePool()
 		Expect(k8sClient.Create(ctx, np)).To(Succeed())
 
 		By("waiting for NodePool ApplyDesire to confirm both CRs are reconciled")
@@ -255,7 +255,7 @@ var _ = Describe("Cluster lifecycle", func() {
 		}).Should(Succeed())
 
 		By("creating a NodePool CR")
-		np := newTestNodePool(clusterName)
+		np := newTestNodePool()
 		Expect(k8sClient.Create(ctx, np)).To(Succeed())
 
 		By("waiting for NodePool ApplyDesire in DynamoDB")
@@ -266,7 +266,7 @@ var _ = Describe("Cluster lifecycle", func() {
 				resource := attrString(item, "spec", "targetItem", "resource")
 				if resource == "nodepools" {
 					name := attrString(item, "spec", "targetItem", "name")
-					g.Expect(name).To(Equal("my-e2e-cluster-e2e-nodepool"))
+					g.Expect(name).To(Equal(clusterName + "-e2e-nodepool"))
 					return
 				}
 			}
@@ -287,7 +287,7 @@ var _ = Describe("Cluster lifecycle", func() {
 		}).Should(Succeed())
 
 		By("creating a NodePool CR")
-		np := newTestNodePool(clusterName)
+		np := newTestNodePool()
 		Expect(k8sClient.Create(ctx, np)).To(Succeed())
 
 		By("waiting for NodePool ApplyDesire in DynamoDB")

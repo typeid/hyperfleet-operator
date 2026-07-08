@@ -30,7 +30,17 @@ func hash4(clusterID string) string {
 }
 
 func clusterNamespace(clusterID string) string {
-	return fmt.Sprintf("clusters-%s", clusterID)
+	return fmt.Sprintf("cluster-%s", clusterID)
+}
+
+// ClusterIDFromNamespace extracts the cluster UUID from a namespace name
+// with the "cluster-" prefix.
+func ClusterIDFromNamespace(ns string) string {
+	const prefix = "cluster-"
+	if len(ns) > len(prefix) && ns[:len(prefix)] == prefix {
+		return ns[len(prefix):]
+	}
+	return ns
 }
 
 // Minimal local types for CRDs that lack standalone API modules.

@@ -23,12 +23,15 @@ import (
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	hypershiftv1beta1 "github.com/openshift/hypershift/api/hypershift/v1beta1"
+	"github.com/openshift/hypershift/api/util/ipnet"
 	hyperfleetv1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
 	"github.com/typeid/hyperfleet-operator/internal/dynamo"
 	"github.com/typeid/hyperfleet-operator/internal/render"
@@ -38,7 +41,7 @@ var _ = Describe("Cluster Controller", func() {
 	Context("When reconciling a new Cluster", func() {
 		const (
 			clusterName = "test-cluster-01"
-			testNS      = "test-cluster-id"
+			testNS      = "cluster-test-cluster-id"
 		)
 
 		ctx := context.Background()
@@ -121,7 +124,7 @@ var _ = Describe("Cluster Controller", func() {
 					Namespace: testNS,
 				},
 				Spec: hyperfleetv1alpha1.PlacementSpec{
-					ClusterRef:        clusterName,
+					ClusterName:       clusterName,
 					ManagementCluster: "mc01",
 				},
 			}
@@ -163,7 +166,7 @@ var _ = Describe("Cluster Controller", func() {
 					Namespace: testNS,
 				},
 				Spec: hyperfleetv1alpha1.PlacementSpec{
-					ClusterRef:        clusterName,
+					ClusterName:       clusterName,
 					ManagementCluster: "mc01",
 				},
 			}
@@ -267,7 +270,7 @@ var _ = Describe("Cluster Controller", func() {
 					Namespace: testNS,
 				},
 				Spec: hyperfleetv1alpha1.PlacementSpec{
-					ClusterRef:        clusterName,
+					ClusterName:       clusterName,
 					ManagementCluster: "mc01",
 				},
 			}
@@ -349,7 +352,7 @@ var _ = Describe("Cluster Controller", func() {
 					Namespace: testNS,
 				},
 				Spec: hyperfleetv1alpha1.PlacementSpec{
-					ClusterRef:        clusterName,
+					ClusterName:       clusterName,
 					ManagementCluster: "mc01",
 				},
 			}
@@ -415,37 +418,65 @@ var _ = Describe("Cluster Controller", func() {
 	})
 })
 
+func mustParseCIDR(s string) ipnet.IPNet {
+	parsed, err := ipnet.ParseCIDR(s)
+	if err != nil {
+		panic(err)
+	}
+	return *parsed
+}
+
 func newTestCluster(name string) *hyperfleetv1alpha1.Cluster {
 	return &hyperfleetv1alpha1.Cluster{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
-			Namespace: "test-cluster-id",
+			Namespace: "cluster-test-cluster-id",
 		},
 		Spec: hyperfleetv1alpha1.ClusterSpec{
-			Name:                      "my-cluster",
-			AccountID:                 "123456789012",
-			Region:                    "us-east-1",
-			VpcID:                     "vpc-abc123",
-			PrivateSubnetIDs:          []string{"subnet-1", "subnet-2"},
-			WorkerInstanceProfileName: "worker-profile",
-			WorkerSecurityGroupID:     "sg-abc123",
-			OIDCIssuerURL:             "https://oidc.example.com/cluster-01",
-			Release:                   hypershiftv1beta1.Release{Image: "quay.io/openshift-release-dev/ocp-release:4.17.0-ec.2-x86_64"},
-			Networking: hyperfleetv1alpha1.NetworkingSpec{
-				ClusterNetwork: []hyperfleetv1alpha1.NetworkEntry{{CIDR: "10.128.0.0/14"}},
-				ServiceNetwork: []hyperfleetv1alpha1.NetworkEntry{{CIDR: "172.30.0.0/16"}},
-				MachineNetwork: []hyperfleetv1alpha1.NetworkEntry{{CIDR: "10.0.0.0/16"}},
-			},
-			Platform: hyperfleetv1alpha1.PlatformSpec{
-				AWS: hyperfleetv1alpha1.AWSPlatformSpec{
-					Roles: hypershiftv1beta1.AWSRolesRef{
-						ControlPlaneOperatorARN: "arn:aws:iam::123456789012:role/cpo",
-						IngressARN:              "arn:aws:iam::123456789012:role/ingress",
-						ImageRegistryARN:        "arn:aws:iam::123456789012:role/registry",
-						KubeCloudControllerARN:  "arn:aws:iam::123456789012:role/kccm",
-						NodePoolManagementARN:   "arn:aws:iam::123456789012:role/npm",
-						NetworkARN:              "arn:aws:iam::123456789012:role/network",
-						StorageARN:              "arn:aws:iam::123456789012:role/storage",
+			CreatorARN: "arn:aws:iam::123456789012:user/admin",
+			HostedCluster: hypershiftv1beta1.HostedClusterSpec{
+				Release:    hypershiftv1beta1.Release{Image: "quay.io/openshift-release-dev/ocp-release:4.17.0-ec.2-x86_64"},
+				IssuerURL:  "https://oidc.example.com/cluster-01",
+				PullSecret: corev1.LocalObjectReference{Name: "pull-secret"},
+				Networking: hypershiftv1beta1.ClusterNetworking{
+					ClusterNetwork: []hypershiftv1beta1.ClusterNetworkEntry{{CIDR: mustParseCIDR("10.128.0.0/14")}},
+					ServiceNetwork: []hypershiftv1beta1.ServiceNetworkEntry{{CIDR: mustParseCIDR("172.30.0.0/16")}},
+					MachineNetwork: []hypershiftv1beta1.MachineNetworkEntry{{CIDR: mustParseCIDR("10.0.0.0/16")}},
+				},
+				Etcd: hypershiftv1beta1.EtcdSpec{
+					ManagementType: hypershiftv1beta1.Managed,
+					Managed: &hypershiftv1beta1.ManagedEtcdSpec{
+						Storage: hypershiftv1beta1.ManagedEtcdStorageSpec{
+							Type: hypershiftv1beta1.PersistentVolumeEtcdStorage,
+						},
+					},
+				},
+				Services: []hypershiftv1beta1.ServicePublishingStrategyMapping{
+					{Service: hypershiftv1beta1.APIServer, ServicePublishingStrategy: hypershiftv1beta1.ServicePublishingStrategy{Type: hypershiftv1beta1.Route}},
+					{Service: hypershiftv1beta1.OAuthServer, ServicePublishingStrategy: hypershiftv1beta1.ServicePublishingStrategy{Type: hypershiftv1beta1.Route}},
+					{Service: hypershiftv1beta1.Konnectivity, ServicePublishingStrategy: hypershiftv1beta1.ServicePublishingStrategy{Type: hypershiftv1beta1.Route}},
+					{Service: hypershiftv1beta1.Ignition, ServicePublishingStrategy: hypershiftv1beta1.ServicePublishingStrategy{Type: hypershiftv1beta1.Route}},
+				},
+				Platform: hypershiftv1beta1.PlatformSpec{
+					Type: hypershiftv1beta1.AWSPlatform,
+					AWS: &hypershiftv1beta1.AWSPlatformSpec{
+						Region: "us-east-1",
+						CloudProviderConfig: &hypershiftv1beta1.AWSCloudProviderConfig{
+							VPC:  "vpc-abc123",
+							Zone: "us-east-1a",
+							Subnet: &hypershiftv1beta1.AWSResourceReference{
+								ID: ptr.To("subnet-1,subnet-2"),
+							},
+						},
+						RolesRef: hypershiftv1beta1.AWSRolesRef{
+							ControlPlaneOperatorARN: "arn:aws:iam::123456789012:role/cpo",
+							IngressARN:              "arn:aws:iam::123456789012:role/ingress",
+							ImageRegistryARN:        "arn:aws:iam::123456789012:role/registry",
+							KubeCloudControllerARN:  "arn:aws:iam::123456789012:role/kccm",
+							NodePoolManagementARN:   "arn:aws:iam::123456789012:role/npm",
+							NetworkARN:              "arn:aws:iam::123456789012:role/network",
+							StorageARN:              "arn:aws:iam::123456789012:role/storage",
+						},
 					},
 				},
 			},

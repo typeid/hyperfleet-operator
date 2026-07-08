@@ -4,15 +4,17 @@ ARG TARGETOS
 ARG TARGETARCH
 
 WORKDIR /workspace
+# Copy the local replace dependency
+COPY postgres-controller-backend/ /postgres-controller-backend/
 # Copy the Go Modules manifests
-COPY go.mod go.sum ./
-COPY api/go.mod api/go.sum ./api/
+COPY hyperfleet/go.mod hyperfleet/go.sum ./
+COPY hyperfleet/api/go.mod hyperfleet/api/go.sum ./api/
 # cache deps before building and copying source so that we don't need to re-download as much
 # and so that source changes don't invalidate our downloaded layer
 RUN go mod download
 
 # Copy the Go source (relies on .dockerignore to filter)
-COPY . .
+COPY hyperfleet/ .
 
 # Build
 # the GOARCH has no default value to allow the binary to be built according to the host where the command

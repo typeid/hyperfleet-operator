@@ -2,11 +2,9 @@ package render
 
 import (
 	"fmt"
-	"strings"
 
 	configv1 "github.com/openshift/api/config/v1"
 	hypershiftv1beta1 "github.com/openshift/hypershift/api/hypershift/v1beta1"
-	"github.com/openshift/hypershift/api/util/ipnet"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -17,9 +15,9 @@ import (
 
 // ClusterResources generates the 7 Kubernetes resources for a cluster on the MC.
 func ClusterResources(cluster *hyperfleetv1alpha1.Cluster, rcfg RegionalConfig) ([]Resource, error) {
-	clusterID := cluster.Name
-	clusterName := cluster.Spec.Name
-	ns := clusterNamespace(clusterID)
+	clusterID := ClusterIDFromNamespace(cluster.Namespace)
+	clusterName := cluster.Name // human-readable
+	ns := cluster.Namespace     // already "cluster-<uuid>"
 	h4 := hash4(clusterID)
 	// Zone shard 0 is hardcoded; will be dynamically assigned per-cluster in a future phase.
 	zoneDomain := fmt.Sprintf("0.%s", rcfg.BaseDomain)
@@ -180,39 +178,44 @@ func apiServingCert(clusterID, clusterName, h4, baseDomain, ns string) Resource 
 }
 
 func hostedCluster(cluster *hyperfleetv1alpha1.Cluster, h4, zoneDomain string, rcfg RegionalConfig) (Resource, error) {
-	clusterID := cluster.Name
-	clusterName := cluster.Spec.Name
-	ns := clusterNamespace(clusterID)
+	clusterID := ClusterIDFromNamespace(cluster.Namespace)
+	clusterName := cluster.Name // human-readable
+	ns := cluster.Namespace     // already "cluster-<uuid>"
 	baseDomain := zoneDomain
-	zone := rcfg.AWSRegion + "a"
-	roles := cluster.Spec.Platform.AWS.Roles
-
-	clusterNetwork := make([]hypershiftv1beta1.ClusterNetworkEntry, 0, len(cluster.Spec.Networking.ClusterNetwork))
-	for _, n := range cluster.Spec.Networking.ClusterNetwork {
-		parsed, err := ipnet.ParseCIDR(n.CIDR)
-		if err != nil {
-			return Resource{}, fmt.Errorf("parse cluster network CIDR %q: %w", n.CIDR, err)
-		}
-		clusterNetwork = append(clusterNetwork, hypershiftv1beta1.ClusterNetworkEntry{CIDR: *parsed})
-	}
-	serviceNetwork := make([]hypershiftv1beta1.ServiceNetworkEntry, 0, len(cluster.Spec.Networking.ServiceNetwork))
-	for _, n := range cluster.Spec.Networking.ServiceNetwork {
-		parsed, err := ipnet.ParseCIDR(n.CIDR)
-		if err != nil {
-			return Resource{}, fmt.Errorf("parse service network CIDR %q: %w", n.CIDR, err)
-		}
-		serviceNetwork = append(serviceNetwork, hypershiftv1beta1.ServiceNetworkEntry{CIDR: *parsed})
-	}
-	machineNetwork := make([]hypershiftv1beta1.MachineNetworkEntry, 0, len(cluster.Spec.Networking.MachineNetwork))
-	for _, n := range cluster.Spec.Networking.MachineNetwork {
-		parsed, err := ipnet.ParseCIDR(n.CIDR)
-		if err != nil {
-			return Resource{}, fmt.Errorf("parse machine network CIDR %q: %w", n.CIDR, err)
-		}
-		machineNetwork = append(machineNetwork, hypershiftv1beta1.MachineNetworkEntry{CIDR: *parsed})
-	}
-
 	apiHost := fmt.Sprintf("api.%s.%s.%s", clusterName, h4, baseDomain)
+
+	hcSpec := cluster.Spec.HostedCluster.DeepCopy()
+
+	// --- Platform-managed overrides (always set by the operator) ---
+	hcSpec.InfraID = clusterID
+	hcSpec.DNS = hypershiftv1beta1.DNSSpec{
+		BaseDomain: fmt.Sprintf("%s.%s", h4, baseDomain),
+	}
+	hcSpec.PullSecret = corev1.LocalObjectReference{Name: "pull-secret"}
+	hcSpec.SSHKey = corev1.LocalObjectReference{Name: "ssh-key"}
+	hcSpec.KubeAPIServerDNSName = apiHost
+	hcSpec.Services = servicePublishingStrategies(clusterName, h4, baseDomain)
+	hcSpec.Configuration = apiServerConfiguration()
+
+	// --- Defaults (only set if customer didn't specify) ---
+	if hcSpec.Etcd.ManagementType == "" {
+		hcSpec.Etcd = defaultEtcdSpec()
+	}
+	if hcSpec.Networking.NetworkType == "" {
+		hcSpec.Networking.NetworkType = hypershiftv1beta1.OVNKubernetes
+	}
+	if hcSpec.InfrastructureAvailabilityPolicy == "" {
+		hcSpec.InfrastructureAvailabilityPolicy = hypershiftv1beta1.HighlyAvailable
+	}
+	if hcSpec.ControllerAvailabilityPolicy == "" {
+		hcSpec.ControllerAvailabilityPolicy = hypershiftv1beta1.HighlyAvailable
+	}
+
+	// --- Platform overrides ---
+	if hcSpec.Platform.AWS != nil {
+		hcSpec.Platform.AWS.EndpointAccess = hypershiftv1beta1.PublicAndPrivate
+		hcSpec.Platform.AWS.ResourceTags = appendSystemTags(hcSpec.Platform.AWS.ResourceTags, clusterID)
+	}
 
 	return Resource{
 		Group: "hypershift.openshift.io", Version: "v1beta1", Resource: "hostedclusters",
@@ -234,100 +237,84 @@ func hostedCluster(cluster *hyperfleetv1alpha1.Cluster, h4, zoneDomain string, r
 					"hypershift.openshift.io/aws-iam-authenticator":               "true",
 				},
 			},
-			Spec: hypershiftv1beta1.HostedClusterSpec{
-				InfraID: clusterID,
-				DNS: hypershiftv1beta1.DNSSpec{
-					BaseDomain: fmt.Sprintf("%s.%s", h4, baseDomain),
-				},
-				Etcd: hypershiftv1beta1.EtcdSpec{
-					ManagementType: hypershiftv1beta1.Managed,
-					Managed: &hypershiftv1beta1.ManagedEtcdSpec{
-						Storage: hypershiftv1beta1.ManagedEtcdStorageSpec{
-							Type: hypershiftv1beta1.PersistentVolumeEtcdStorage,
-							PersistentVolume: &hypershiftv1beta1.PersistentVolumeEtcdStorageSpec{
-								Size:             ptr.To(resource.MustParse("32Gi")),
-								StorageClassName: ptr.To("gp3"),
-							},
-						},
-					},
-				},
-				FIPS:       true,
-				Release:    cluster.Spec.Release,
-				PullSecret: corev1.LocalObjectReference{Name: "pull-secret"},
-				SSHKey:     corev1.LocalObjectReference{Name: "ssh-key"},
-				Networking: hypershiftv1beta1.ClusterNetworking{
-					ClusterNetwork: clusterNetwork,
-					ServiceNetwork: serviceNetwork,
-					MachineNetwork: machineNetwork,
-					NetworkType:    hypershiftv1beta1.OVNKubernetes,
-				},
-				Platform: hypershiftv1beta1.PlatformSpec{
-					Type: hypershiftv1beta1.AWSPlatform,
-					AWS: &hypershiftv1beta1.AWSPlatformSpec{
-						Region: cluster.Spec.Region,
-						CloudProviderConfig: &hypershiftv1beta1.AWSCloudProviderConfig{
-							VPC:  cluster.Spec.VpcID,
-							Zone: zone,
-							Subnet: &hypershiftv1beta1.AWSResourceReference{
-								ID: ptr.To(strings.Join(cluster.Spec.PrivateSubnetIDs, ",")),
-							},
-						},
-						EndpointAccess: hypershiftv1beta1.PublicAndPrivate,
-						RolesRef:       roles,
-						ResourceTags: []hypershiftv1beta1.AWSResourceTag{
-							{Key: fmt.Sprintf("kubernetes.io/cluster/%s", clusterID), Value: "owned"},
-							{Key: "red-hat-managed", Value: "true"},
-						},
-					},
-				},
-				KubeAPIServerDNSName: apiHost,
-				Configuration: &hypershiftv1beta1.ClusterConfiguration{
-					APIServer: &configv1.APIServerSpec{
-						ServingCerts: configv1.APIServerServingCerts{
-							NamedCertificates: []configv1.APIServerNamedServingCert{
-								{
-									ServingCertificate: configv1.SecretNameReference{
-										Name: "api-serving-cert",
-									},
-								},
-							},
-						},
-					},
-				},
-				IssuerURL: cluster.Spec.OIDCIssuerURL,
-				Services: []hypershiftv1beta1.ServicePublishingStrategyMapping{
-					{
-						Service: hypershiftv1beta1.APIServer,
-						ServicePublishingStrategy: hypershiftv1beta1.ServicePublishingStrategy{
-							Type:  hypershiftv1beta1.Route,
-							Route: &hypershiftv1beta1.RoutePublishingStrategy{Hostname: apiHost},
-						},
-					},
-					{
-						Service: hypershiftv1beta1.OAuthServer,
-						ServicePublishingStrategy: hypershiftv1beta1.ServicePublishingStrategy{
-							Type:  hypershiftv1beta1.Route,
-							Route: &hypershiftv1beta1.RoutePublishingStrategy{Hostname: fmt.Sprintf("oauth.%s.%s.%s", clusterName, h4, baseDomain)},
-						},
-					},
-					{
-						Service: hypershiftv1beta1.Konnectivity,
-						ServicePublishingStrategy: hypershiftv1beta1.ServicePublishingStrategy{
-							Type: hypershiftv1beta1.Route,
-						},
-					},
-					{
-						Service: hypershiftv1beta1.Ignition,
-						ServicePublishingStrategy: hypershiftv1beta1.ServicePublishingStrategy{
-							Type: hypershiftv1beta1.Route,
-						},
-					},
-				},
-				InfrastructureAvailabilityPolicy: hypershiftv1beta1.HighlyAvailable,
-				ControllerAvailabilityPolicy:     hypershiftv1beta1.HighlyAvailable,
-			},
+			Spec: *hcSpec,
 		},
 	}, nil
+}
+
+func servicePublishingStrategies(clusterName, h4, baseDomain string) []hypershiftv1beta1.ServicePublishingStrategyMapping {
+	apiHost := fmt.Sprintf("api.%s.%s.%s", clusterName, h4, baseDomain)
+	return []hypershiftv1beta1.ServicePublishingStrategyMapping{
+		{
+			Service: hypershiftv1beta1.APIServer,
+			ServicePublishingStrategy: hypershiftv1beta1.ServicePublishingStrategy{
+				Type:  hypershiftv1beta1.Route,
+				Route: &hypershiftv1beta1.RoutePublishingStrategy{Hostname: apiHost},
+			},
+		},
+		{
+			Service: hypershiftv1beta1.OAuthServer,
+			ServicePublishingStrategy: hypershiftv1beta1.ServicePublishingStrategy{
+				Type:  hypershiftv1beta1.Route,
+				Route: &hypershiftv1beta1.RoutePublishingStrategy{Hostname: fmt.Sprintf("oauth.%s.%s.%s", clusterName, h4, baseDomain)},
+			},
+		},
+		{
+			Service: hypershiftv1beta1.Konnectivity,
+			ServicePublishingStrategy: hypershiftv1beta1.ServicePublishingStrategy{
+				Type: hypershiftv1beta1.Route,
+			},
+		},
+		{
+			Service: hypershiftv1beta1.Ignition,
+			ServicePublishingStrategy: hypershiftv1beta1.ServicePublishingStrategy{
+				Type: hypershiftv1beta1.Route,
+			},
+		},
+	}
+}
+
+func apiServerConfiguration() *hypershiftv1beta1.ClusterConfiguration {
+	return &hypershiftv1beta1.ClusterConfiguration{
+		APIServer: &configv1.APIServerSpec{
+			ServingCerts: configv1.APIServerServingCerts{
+				NamedCertificates: []configv1.APIServerNamedServingCert{
+					{
+						ServingCertificate: configv1.SecretNameReference{
+							Name: "api-serving-cert",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func defaultEtcdSpec() hypershiftv1beta1.EtcdSpec {
+	return hypershiftv1beta1.EtcdSpec{
+		ManagementType: hypershiftv1beta1.Managed,
+		Managed: &hypershiftv1beta1.ManagedEtcdSpec{
+			Storage: hypershiftv1beta1.ManagedEtcdStorageSpec{
+				Type: hypershiftv1beta1.PersistentVolumeEtcdStorage,
+				PersistentVolume: &hypershiftv1beta1.PersistentVolumeEtcdStorageSpec{
+					Size:             ptr.To(resource.MustParse("32Gi")),
+					StorageClassName: ptr.To("gp3"),
+				},
+			},
+		},
+	}
+}
+
+func appendSystemTags(existing []hypershiftv1beta1.AWSResourceTag, clusterID string) []hypershiftv1beta1.AWSResourceTag {
+	tags := []hypershiftv1beta1.AWSResourceTag{
+		{Key: "red-hat-managed", Value: "true"},
+	}
+	if clusterID != "" {
+		tags = append(tags, hypershiftv1beta1.AWSResourceTag{
+			Key: fmt.Sprintf("kubernetes.io/cluster/%s", clusterID), Value: "owned",
+		})
+	}
+	return append(tags, existing...)
 }
 
 func sshKey(clusterID, ns string) Resource {

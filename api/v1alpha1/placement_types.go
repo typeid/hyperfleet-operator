@@ -31,11 +31,11 @@ const (
 )
 
 // PlacementSpec defines the desired placement of a Cluster on a management cluster.
-// +kubebuilder:validation:XValidation:rule="self.clusterRef == oldSelf.clusterRef",message="spec.clusterRef is immutable"
+// +kubebuilder:validation:XValidation:rule="self.clusterName == oldSelf.clusterName",message="spec.clusterName is immutable"
 type PlacementSpec struct {
-	// ClusterRef is the name of the Cluster CR this placement is for.
+	// ClusterName is the name of the Cluster CR this placement is for.
 	// +kubebuilder:validation:MinLength=1
-	ClusterRef string `json:"clusterRef"`
+	ClusterName string `json:"clusterName"`
 
 	// ManagementCluster is the target management cluster ID (e.g. mc01).
 	// +kubebuilder:validation:MinLength=1
@@ -63,7 +63,7 @@ type PlacementStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Namespaced,shortName=hfp
-// +kubebuilder:printcolumn:name="Cluster",type=string,JSONPath=".spec.clusterRef"
+// +kubebuilder:printcolumn:name="Cluster",type=string,JSONPath=".spec.clusterName"
 // +kubebuilder:printcolumn:name="MC",type=string,JSONPath=".spec.managementCluster"
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"

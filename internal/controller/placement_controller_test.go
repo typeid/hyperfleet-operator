@@ -33,7 +33,7 @@ var _ = Describe("Placement Controller", func() {
 	Context("When reconciling a Cluster", func() {
 		const (
 			clusterName = "test-placement-cluster"
-			testNS      = "test-cluster-id"
+			testNS      = "cluster-test-cluster-id"
 		)
 
 		ctx := context.Background()
@@ -84,7 +84,7 @@ var _ = Describe("Placement Controller", func() {
 
 			var placement hyperfleetv1alpha1.Placement
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: clusterName + "-placement"}, &placement)).To(Succeed())
-			Expect(placement.Spec.ClusterRef).To(Equal(clusterName))
+			Expect(placement.Spec.ClusterName).To(Equal(clusterName))
 			Expect(placement.Spec.ManagementCluster).To(Equal(mcName))
 			Expect(placement.Status.Phase).To(Equal(hyperfleetv1alpha1.PlacementPhaseBound))
 		})

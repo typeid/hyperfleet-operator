@@ -34,53 +34,13 @@ const (
 )
 
 // NodePoolSpec defines the desired state of a NodePool.
-// +kubebuilder:validation:XValidation:rule="self.clusterRef == oldSelf.clusterRef",message="spec.clusterRef is immutable"
+// The parent Cluster is identified by the shared metadata.Namespace (cluster UUID).
 type NodePoolSpec struct {
-	// ClusterRef is the name of the Cluster CR this node pool belongs to.
-	// +kubebuilder:validation:MinLength=1
-	ClusterRef string `json:"clusterRef"`
-
-	// Replicas is the desired number of worker nodes.
-	// +kubebuilder:validation:Minimum=0
-	Replicas int32 `json:"replicas"`
-
-	// Management configures node lifecycle management.
-	Management hypershiftv1beta1.NodePoolManagement `json:"management"`
-
-	// Release specifies the OpenShift release for the worker nodes.
-	Release hypershiftv1beta1.Release `json:"release"`
-
-	// Platform contains cloud-provider-specific node pool configuration.
-	Platform NodePoolPlatformSpec `json:"platform"`
-}
-
-// NodePoolPlatformSpec contains cloud-provider-specific node pool configuration.
-type NodePoolPlatformSpec struct {
-	// AWS contains AWS-specific node pool configuration.
-	AWS AWSNodePoolSpec `json:"aws"`
-}
-
-// AWSNodePoolSpec configures AWS-specific node pool settings.
-type AWSNodePoolSpec struct {
-	// InstanceType is the EC2 instance type (e.g. m6a.xlarge).
-	// +kubebuilder:validation:MinLength=1
-	InstanceType string `json:"instanceType"`
-
-	// RootVolume configures the root EBS volume.
-	RootVolume hypershiftv1beta1.Volume `json:"rootVolume"`
-
-	// SubnetID is the subnet where nodes are launched.
-	// +kubebuilder:validation:Pattern=`^subnet-[a-z0-9]+$`
-	SubnetID string `json:"subnetId"`
-
-	// InstanceProfile is the IAM instance profile for worker nodes.
-	// +kubebuilder:validation:MinLength=1
-	InstanceProfile string `json:"instanceProfile"`
-
-	// SecurityGroups is the list of security group IDs for worker nodes.
-	// +kubebuilder:validation:MinItems=1
-	// +kubebuilder:validation:items:Pattern=`^sg-[a-z0-9]+$`
-	SecurityGroups []string `json:"securityGroups"`
+	// NodePool is the full HyperShift NodePoolSpec. The customer provides replicas,
+	// platform, release, etc. The operator overrides ClusterName and adds system
+	// resource tags at render time.
+	// +kubebuilder:validation:Required
+	NodePool hypershiftv1beta1.NodePoolSpec `json:"nodePool"`
 }
 
 // NodePoolStatus defines the observed state of a NodePool.
@@ -104,13 +64,12 @@ type NodePoolStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Namespaced,shortName=hfnp
-// +kubebuilder:printcolumn:name="Cluster",type=string,JSONPath=".spec.clusterRef"
-// +kubebuilder:printcolumn:name="Replicas",type=integer,JSONPath=".spec.replicas"
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
 
 // NodePool is the Schema for the nodepools API.
 // It represents a set of worker nodes for a Cluster.
+// The parent Cluster shares the same metadata.Namespace (cluster UUID).
 type NodePool struct {
 	metav1.TypeMeta `json:",inline"`
 

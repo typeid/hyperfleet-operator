@@ -9,9 +9,12 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	hypershiftv1beta1 "github.com/openshift/hypershift/api/hypershift/v1beta1"
+	"github.com/openshift/hypershift/api/util/ipnet"
 	hyperfleetv1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/ptr"
 )
 
 var _ = BeforeEach(func() {
@@ -117,35 +120,62 @@ func purgeDynamoTables() {
 	}
 }
 
+func mustParseCIDR(s string) ipnet.IPNet {
+	parsed, err := ipnet.ParseCIDR(s)
+	if err != nil {
+		panic(err)
+	}
+	return *parsed
+}
+
 func newTestCluster(name string) *hyperfleetv1alpha1.Cluster {
 	return &hyperfleetv1alpha1.Cluster{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "e2e-cluster-id"},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "cluster-e2e-cluster-id"},
 		Spec: hyperfleetv1alpha1.ClusterSpec{
-			Name:                      "my-e2e-cluster",
-			AccountID:                 "111222333444",
-			Region:                    "us-east-1",
-			VpcID:                     "vpc-e2e0001",
-			PrivateSubnetIDs:          []string{"subnet-e2e0001"},
-			WorkerInstanceProfileName: "worker-profile",
-			WorkerSecurityGroupID:     "sg-e2e0001",
-			OIDCIssuerURL:             "https://oidc.e2e.example.com/" + name,
-			Release:                   hypershiftv1beta1.Release{Image: "quay.io/ocp:4.17"},
-			CreatorARN:                "arn:aws:iam::111222333444:user/e2etester",
-			Networking: hyperfleetv1alpha1.NetworkingSpec{
-				ClusterNetwork: []hyperfleetv1alpha1.NetworkEntry{{CIDR: "10.128.0.0/14"}},
-				ServiceNetwork: []hyperfleetv1alpha1.NetworkEntry{{CIDR: "172.30.0.0/16"}},
-				MachineNetwork: []hyperfleetv1alpha1.NetworkEntry{{CIDR: "10.0.0.0/16"}},
-			},
-			Platform: hyperfleetv1alpha1.PlatformSpec{
-				AWS: hyperfleetv1alpha1.AWSPlatformSpec{
-					Roles: hypershiftv1beta1.AWSRolesRef{
-						ControlPlaneOperatorARN: "arn:aws:iam::111222333444:role/cpo",
-						IngressARN:              "arn:aws:iam::111222333444:role/ingress",
-						ImageRegistryARN:        "arn:aws:iam::111222333444:role/registry",
-						KubeCloudControllerARN:  "arn:aws:iam::111222333444:role/kccm",
-						NodePoolManagementARN:   "arn:aws:iam::111222333444:role/npm",
-						NetworkARN:              "arn:aws:iam::111222333444:role/network",
-						StorageARN:              "arn:aws:iam::111222333444:role/storage",
+			CreatorARN: "arn:aws:iam::111222333444:user/e2etester",
+			HostedCluster: hypershiftv1beta1.HostedClusterSpec{
+				Release:    hypershiftv1beta1.Release{Image: "quay.io/ocp:4.17"},
+				IssuerURL:  "https://oidc.e2e.example.com/" + name,
+				PullSecret: corev1.LocalObjectReference{Name: "pull-secret"},
+				Networking: hypershiftv1beta1.ClusterNetworking{
+					ClusterNetwork: []hypershiftv1beta1.ClusterNetworkEntry{{CIDR: mustParseCIDR("10.128.0.0/14")}},
+					ServiceNetwork: []hypershiftv1beta1.ServiceNetworkEntry{{CIDR: mustParseCIDR("172.30.0.0/16")}},
+					MachineNetwork: []hypershiftv1beta1.MachineNetworkEntry{{CIDR: mustParseCIDR("10.0.0.0/16")}},
+				},
+				Etcd: hypershiftv1beta1.EtcdSpec{
+					ManagementType: hypershiftv1beta1.Managed,
+					Managed: &hypershiftv1beta1.ManagedEtcdSpec{
+						Storage: hypershiftv1beta1.ManagedEtcdStorageSpec{
+							Type: hypershiftv1beta1.PersistentVolumeEtcdStorage,
+						},
+					},
+				},
+				Services: []hypershiftv1beta1.ServicePublishingStrategyMapping{
+					{Service: hypershiftv1beta1.APIServer, ServicePublishingStrategy: hypershiftv1beta1.ServicePublishingStrategy{Type: hypershiftv1beta1.Route}},
+					{Service: hypershiftv1beta1.OAuthServer, ServicePublishingStrategy: hypershiftv1beta1.ServicePublishingStrategy{Type: hypershiftv1beta1.Route}},
+					{Service: hypershiftv1beta1.Konnectivity, ServicePublishingStrategy: hypershiftv1beta1.ServicePublishingStrategy{Type: hypershiftv1beta1.Route}},
+					{Service: hypershiftv1beta1.Ignition, ServicePublishingStrategy: hypershiftv1beta1.ServicePublishingStrategy{Type: hypershiftv1beta1.Route}},
+				},
+				Platform: hypershiftv1beta1.PlatformSpec{
+					Type: hypershiftv1beta1.AWSPlatform,
+					AWS: &hypershiftv1beta1.AWSPlatformSpec{
+						Region: "us-east-1",
+						CloudProviderConfig: &hypershiftv1beta1.AWSCloudProviderConfig{
+							VPC:  "vpc-e2e0001",
+							Zone: "us-east-1a",
+							Subnet: &hypershiftv1beta1.AWSResourceReference{
+								ID: ptr.To("subnet-e2e0001"),
+							},
+						},
+						RolesRef: hypershiftv1beta1.AWSRolesRef{
+							ControlPlaneOperatorARN: "arn:aws:iam::111222333444:role/cpo",
+							IngressARN:              "arn:aws:iam::111222333444:role/ingress",
+							ImageRegistryARN:        "arn:aws:iam::111222333444:role/registry",
+							KubeCloudControllerARN:  "arn:aws:iam::111222333444:role/kccm",
+							NodePoolManagementARN:   "arn:aws:iam::111222333444:role/npm",
+							NetworkARN:              "arn:aws:iam::111222333444:role/network",
+							StorageARN:              "arn:aws:iam::111222333444:role/storage",
+						},
 					},
 				},
 			},
@@ -153,24 +183,31 @@ func newTestCluster(name string) *hyperfleetv1alpha1.Cluster {
 	}
 }
 
-func newTestNodePool(clusterRef string) *hyperfleetv1alpha1.NodePool {
+func newTestNodePool() *hyperfleetv1alpha1.NodePool {
 	return &hyperfleetv1alpha1.NodePool{
-		ObjectMeta: metav1.ObjectMeta{Name: "e2e-nodepool", Namespace: "e2e-cluster-id"},
+		ObjectMeta: metav1.ObjectMeta{Name: "e2e-nodepool", Namespace: "cluster-e2e-cluster-id"},
 		Spec: hyperfleetv1alpha1.NodePoolSpec{
-			ClusterRef: clusterRef,
-			Replicas:   3,
-			Management: hypershiftv1beta1.NodePoolManagement{
-				AutoRepair:  true,
-				UpgradeType: hypershiftv1beta1.UpgradeTypeReplace,
-			},
-			Release: hypershiftv1beta1.Release{Image: "quay.io/ocp:4.17"},
-			Platform: hyperfleetv1alpha1.NodePoolPlatformSpec{
-				AWS: hyperfleetv1alpha1.AWSNodePoolSpec{
-					InstanceType:    "m6a.xlarge",
-					RootVolume:      hypershiftv1beta1.Volume{Size: 120, Type: "gp3"},
-					SubnetID:        "subnet-e2e0001",
-					InstanceProfile: "worker-profile",
-					SecurityGroups:  []string{"sg-e2e0001"},
+			NodePool: hypershiftv1beta1.NodePoolSpec{
+				ClusterName: "e2e-test-01",
+				Replicas:    ptr.To(int32(3)),
+				Management: hypershiftv1beta1.NodePoolManagement{
+					AutoRepair:  true,
+					UpgradeType: hypershiftv1beta1.UpgradeTypeReplace,
+				},
+				Release: hypershiftv1beta1.Release{Image: "quay.io/ocp:4.17"},
+				Platform: hypershiftv1beta1.NodePoolPlatform{
+					Type: hypershiftv1beta1.AWSPlatform,
+					AWS: &hypershiftv1beta1.AWSNodePoolPlatform{
+						InstanceType:    "m6a.xlarge",
+						RootVolume:      &hypershiftv1beta1.Volume{Size: 120, Type: "gp3"},
+						InstanceProfile: "worker-profile",
+						Subnet: hypershiftv1beta1.AWSResourceReference{
+							ID: ptr.To("subnet-e2e0001"),
+						},
+						SecurityGroups: []hypershiftv1beta1.AWSResourceReference{
+							{ID: ptr.To("sg-e2e0001")},
+						},
+					},
 				},
 			},
 		},

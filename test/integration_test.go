@@ -8,7 +8,7 @@ import (
 )
 
 var _ = Describe("Cross-component interaction", func() {
-	const testNS = "e2e-cluster-id"
+	const testNS = "cluster-e2e-cluster-id"
 
 	AfterEach(func() {
 		purgeResources()
@@ -34,7 +34,7 @@ var _ = Describe("Cross-component interaction", func() {
 			for _, item := range items {
 				resource := attrString(item, "spec", "targetItem", "resource")
 				name := attrString(item, "spec", "targetItem", "name")
-				if resource == "namespaces" && name == "clusters-e2e-sep-test" {
+				if resource == "namespaces" && name == testNS {
 					hasClusterNS = true
 				}
 				if resource == "serviceaccounts" && name == "e2e-runner" {
@@ -46,7 +46,7 @@ var _ = Describe("Cross-component interaction", func() {
 		}).Should(Succeed())
 
 		By("verifying document IDs don't collide")
-		clusterDocID := dynamo.NewDocumentID("hyperfleet-operator", "", "v1", "namespaces", "", "clusters-e2e-sep-test")
+		clusterDocID := dynamo.NewDocumentID("hyperfleet-operator", "", "v1", "namespaces", "", testNS)
 		manifestDocID := dynamo.NewDocumentID("hyperfleet-manifest/mc01/e2e-monitoring", "", "v1", "serviceaccounts", "e2e-actions", "e2e-runner")
 		Expect(clusterDocID).NotTo(Equal(manifestDocID))
 
