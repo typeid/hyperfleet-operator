@@ -38,7 +38,7 @@ var _ = Describe("Cluster Controller", func() {
 	Context("When reconciling a new Cluster", func() {
 		const (
 			clusterName = "test-cluster-01"
-			testNS      = "123456789012"
+			testNS      = "test-cluster-id"
 		)
 
 		ctx := context.Background()
@@ -419,7 +419,7 @@ func newTestCluster(name string) *hyperfleetv1alpha1.Cluster {
 	return &hyperfleetv1alpha1.Cluster{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
-			Namespace: "123456789012",
+			Namespace: "test-cluster-id",
 		},
 		Spec: hyperfleetv1alpha1.ClusterSpec{
 			Name:                      "my-cluster",

@@ -5,31 +5,42 @@
 ```mermaid
 sequenceDiagram
     participant API as Platform API
-    participant FDB as fleet-db
+    participant PG as PostgreSQL
     participant NPC as NodePool Controller
     participant DDB as DynamoDB
 
-    API->>FDB: Create NodePool CR (clusterRef=clusterID)
-    NPC->>FDB: Watch detects new NodePool
-    NPC->>FDB: Add finalizer, requeue
-    NPC->>FDB: Get parent Cluster → get PlacementRef
+    participant KA as kube-applier-aws
+    participant MC as Management Cluster
+
+    API->>PG: Create NodePool CR (clusterRef=clusterID)
+    NPC->>PG: Watch detects new NodePool
+    NPC->>PG: Add finalizer (hyperfleet.io/nodepool), requeue
+    NPC->>PG: Get parent Cluster → get PlacementRef
     alt Cluster not found or no PlacementRef
-        NPC->>FDB: Set phase=WaitingForCluster, requeue
+        NPC->>PG: Set phase=WaitingForCluster, requeue
     else Cluster has Bound Placement
         NPC->>NPC: Generate NodePool manifest
         NPC->>DDB: Write ApplyDesire (nodepools/{clusterName}-{nodePoolName})
-        NPC->>FDB: Set phase=Provisioning
+        NPC->>DDB: Write ReadDesire for NodePool status
+        NPC->>PG: Set phase=Provisioning
+        KA->>DDB: Read ApplyDesires
+        KA->>MC: Apply NodePool resource
+        KA->>DDB: Write status (status table)
+        DDB-->>NPC: DynamoDB Stream event via EventRouter (~2s)
+        NPC->>DDB: Read status (consistent read)
+        NPC->>PG: Update NodePool status (conditions, phase)
     end
 ```
 
 ### Reconcile Steps
 
-1. **Finalizer**: Adds `hyperfleet.io/operator` finalizer on first reconcile, requeues
+1. **Finalizer**: Adds `hyperfleet.io/nodepool` finalizer on first reconcile, requeues
 2. **Parent Cluster lookup**: Gets Cluster CR by `spec.clusterRef` in the same namespace (account ID), waits if not found or no `PlacementRef`
 3. **Manifest generation**: Generates a HyperShift NodePool manifest
 4. **ApplyDesire**: Writes one ApplyDesire to `{mc}-specs-applydesires`
-5. **Status propagation**: Reads status from DynamoDB, updates NodePool CR conditions
-6. **Requeue**: Requeues every 30s for status refresh
+5. **ReadDesire**: Creates a ReadDesire for the NodePool to get status feedback (extracts "Ready" condition from the remote NodePool)
+6. **Status propagation**: Reads status from DynamoDB, updates NodePool CR conditions (Synced, Ready) and phase
+7. **Requeue**: Requeues every 5 minutes as a fallback; DynamoDB Streams via EventRouter provides the primary notification path (~2s latency)
 
 ### Generated Resource
 
@@ -46,19 +57,19 @@ When a NodePool is deleted (either standalone or as part of Cluster cascade dele
 ```mermaid
 sequenceDiagram
     participant User as User/API
-    participant FDB as fleet-db
+    participant PG as PostgreSQL
     participant NPC as NodePool Controller
     participant DDB as DynamoDB
 
-    User->>FDB: Delete NodePool CR (sets DeletionTimestamp)
-    NPC->>FDB: Detect DeletionTimestamp, set phase=Deleting
-    NPC->>FDB: Look up parent Cluster → get PlacementRef
+    User->>PG: Delete NodePool CR (sets DeletionTimestamp)
+    NPC->>PG: Detect DeletionTimestamp, set phase=Deleting
+    NPC->>PG: Look up parent Cluster → get PlacementRef
     NPC->>DDB: Delete ApplyDesire spec for nodepools/{clusterName}-{nodePoolName}
     NPC->>DDB: Write DeleteDesire for nodepools/{clusterName}-{nodePoolName}
     NPC->>DDB: Poll status table for deletion confirmation
     NPC->>NPC: Requeue until confirmed
     NPC->>DDB: Delete ReadDesire spec
-    NPC->>FDB: Remove finalizer → CR deleted
+    NPC->>PG: Remove finalizer → CR deleted
 ```
 
 ### Deletion Steps

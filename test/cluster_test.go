@@ -1,6 +1,4 @@
-//go:build e2e
-
-package e2e
+package integration
 
 import (
 	"encoding/json"
@@ -11,7 +9,6 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	hyperfleetv1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
 	dynamo "github.com/typeid/hyperfleet-operator/internal/dynamo"
@@ -20,34 +17,18 @@ import (
 var _ = Describe("Cluster lifecycle", func() {
 	const (
 		clusterName = "e2e-test-01"
-		testNS      = "111222333444"
+		testNS      = "e2e-cluster-id"
 	)
 
 	AfterEach(func() {
-		np := &hyperfleetv1alpha1.NodePool{}
-		if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: "e2e-nodepool"}, np); err == nil {
-			controllerutil.RemoveFinalizer(np, "hyperfleet.io/nodepool")
-			_ = k8sClient.Update(ctx, np)
-			_ = k8sClient.Delete(ctx, np)
-		}
-		cluster := &hyperfleetv1alpha1.Cluster{}
-		if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: clusterName}, cluster); err == nil {
-			controllerutil.RemoveFinalizer(cluster, "hyperfleet.io/cluster")
-			_ = k8sClient.Update(ctx, cluster)
-			_ = k8sClient.Delete(ctx, cluster)
-		}
-		placement := &hyperfleetv1alpha1.Placement{}
-		if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: clusterName + "-placement"}, placement); err == nil {
-			_ = k8sClient.Delete(ctx, placement)
-		}
-		Eventually(func() bool {
-			return k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: clusterName}, &hyperfleetv1alpha1.Cluster{}) != nil
-		}).Should(BeTrue())
+		purgeResources()
+		purgeDynamoTables()
+		dynamoCli.ResetCache()
 	})
 
 	It("should write correct ApplyDesires to DynamoDB when a Cluster is created", func() {
 		By("creating a Cluster CR")
-		cluster := newE2ECluster(clusterName)
+		cluster := newTestCluster(clusterName)
 		Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
 
 		By("waiting for Placement to be created and Bound")
@@ -132,7 +113,7 @@ var _ = Describe("Cluster lifecycle", func() {
 
 	It("should propagate HostedCluster status from ReadDesire to Cluster CR", func() {
 		By("creating a Cluster CR")
-		cluster := newE2ECluster(clusterName)
+		cluster := newTestCluster(clusterName)
 		Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
 
 		By("waiting for ReadDesire to appear in DynamoDB")
@@ -180,9 +161,8 @@ var _ = Describe("Cluster lifecycle", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 
-		// Simulate a DynamoDB Streams event by dispatching through the EventRouter
-		// so the controller re-reconciles immediately instead of waiting for the
-		// 5-minute fallback poll.
+		// DynamoDB Local streams are not reliable enough to deliver events
+		// within test timeouts, so dispatch manually to trigger re-reconciliation.
 		eventRouter.Dispatch(readDocID)
 
 		By("verifying Cluster CR status is updated with HostedCluster data")
@@ -197,7 +177,7 @@ var _ = Describe("Cluster lifecycle", func() {
 
 	It("should cascade delete NodePools, write DeleteDesire, and remove Placement when Cluster is deleted", func() {
 		By("creating a Cluster CR")
-		cluster := newE2ECluster(clusterName)
+		cluster := newTestCluster(clusterName)
 		Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
 
 		By("waiting for PlacementRef to be set")
@@ -208,7 +188,7 @@ var _ = Describe("Cluster lifecycle", func() {
 		}).Should(Succeed())
 
 		By("creating a NodePool CR")
-		np := newE2ENodePool(clusterName)
+		np := newTestNodePool(clusterName)
 		Expect(k8sClient.Create(ctx, np)).To(Succeed())
 
 		By("waiting for NodePool ApplyDesire to confirm both CRs are reconciled")
@@ -265,7 +245,7 @@ var _ = Describe("Cluster lifecycle", func() {
 
 	It("should write NodePool ApplyDesire when NodePool CR is created", func() {
 		By("creating a Cluster CR with PlacementRef")
-		cluster := newE2ECluster(clusterName)
+		cluster := newTestCluster(clusterName)
 		Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
 
 		Eventually(func(g Gomega) {
@@ -275,7 +255,7 @@ var _ = Describe("Cluster lifecycle", func() {
 		}).Should(Succeed())
 
 		By("creating a NodePool CR")
-		np := newE2ENodePool(clusterName)
+		np := newTestNodePool(clusterName)
 		Expect(k8sClient.Create(ctx, np)).To(Succeed())
 
 		By("waiting for NodePool ApplyDesire in DynamoDB")
@@ -296,7 +276,7 @@ var _ = Describe("Cluster lifecycle", func() {
 
 	It("should write NodePool DeleteDesire when only the NodePool is deleted", func() {
 		By("creating a Cluster CR")
-		cluster := newE2ECluster(clusterName)
+		cluster := newTestCluster(clusterName)
 		Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
 
 		By("waiting for PlacementRef")
@@ -307,7 +287,7 @@ var _ = Describe("Cluster lifecycle", func() {
 		}).Should(Succeed())
 
 		By("creating a NodePool CR")
-		np := newE2ENodePool(clusterName)
+		np := newTestNodePool(clusterName)
 		Expect(k8sClient.Create(ctx, np)).To(Succeed())
 
 		By("waiting for NodePool ApplyDesire in DynamoDB")

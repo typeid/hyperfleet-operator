@@ -1,24 +1,70 @@
-//go:build e2e
-
-package e2e
+package integration
 
 import (
+	"time"
+
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	dynamodbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	hypershiftv1beta1 "github.com/openshift/hypershift/api/hypershift/v1beta1"
+	hyperfleetv1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-
-	hyperfleetv1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
 )
 
 var _ = BeforeEach(func() {
+	purgeResources()
 	purgeDynamoTables()
 	dynamoCli.ResetCache()
 })
+
+func purgeResources() {
+	c := mgr.GetClient()
+
+	var clusters hyperfleetv1alpha1.ClusterList
+	if err := c.List(ctx, &clusters); err == nil {
+		for i := range clusters.Items {
+			clusters.Items[i].SetFinalizers(nil)
+			_ = c.Update(ctx, &clusters.Items[i])
+			_ = c.Delete(ctx, &clusters.Items[i])
+		}
+	}
+	var nodepools hyperfleetv1alpha1.NodePoolList
+	if err := c.List(ctx, &nodepools); err == nil {
+		for i := range nodepools.Items {
+			nodepools.Items[i].SetFinalizers(nil)
+			_ = c.Update(ctx, &nodepools.Items[i])
+			_ = c.Delete(ctx, &nodepools.Items[i])
+		}
+	}
+	var manifests hyperfleetv1alpha1.ManifestList
+	if err := c.List(ctx, &manifests); err == nil {
+		for i := range manifests.Items {
+			manifests.Items[i].SetFinalizers(nil)
+			_ = c.Update(ctx, &manifests.Items[i])
+			_ = c.Delete(ctx, &manifests.Items[i])
+		}
+	}
+
+	Eventually(func() int {
+		total := 0
+		var cl hyperfleetv1alpha1.ClusterList
+		if c.List(ctx, &cl) == nil {
+			total += len(cl.Items)
+		}
+		var nl hyperfleetv1alpha1.NodePoolList
+		if c.List(ctx, &nl) == nil {
+			total += len(nl.Items)
+		}
+		var ml hyperfleetv1alpha1.ManifestList
+		if c.List(ctx, &ml) == nil {
+			total += len(ml.Items)
+		}
+		return total
+	}, 5*time.Second, 50*time.Millisecond).Should(Equal(0))
+}
 
 func scanTable(tableName string) []map[string]dynamodbtypes.AttributeValue {
 	out, err := dynamoDBCli.Scan(ctx, &dynamodb.ScanInput{
@@ -71,9 +117,9 @@ func purgeDynamoTables() {
 	}
 }
 
-func newE2ECluster(name string) *hyperfleetv1alpha1.Cluster {
+func newTestCluster(name string) *hyperfleetv1alpha1.Cluster {
 	return &hyperfleetv1alpha1.Cluster{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "111222333444"},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "e2e-cluster-id"},
 		Spec: hyperfleetv1alpha1.ClusterSpec{
 			Name:                      "my-e2e-cluster",
 			AccountID:                 "111222333444",
@@ -107,9 +153,9 @@ func newE2ECluster(name string) *hyperfleetv1alpha1.Cluster {
 	}
 }
 
-func newE2ENodePool(clusterRef string) *hyperfleetv1alpha1.NodePool {
+func newTestNodePool(clusterRef string) *hyperfleetv1alpha1.NodePool {
 	return &hyperfleetv1alpha1.NodePool{
-		ObjectMeta: metav1.ObjectMeta{Name: "e2e-nodepool", Namespace: "111222333444"},
+		ObjectMeta: metav1.ObjectMeta{Name: "e2e-nodepool", Namespace: "e2e-cluster-id"},
 		Spec: hyperfleetv1alpha1.NodePoolSpec{
 			ClusterRef: clusterRef,
 			Replicas:   3,
@@ -131,11 +177,11 @@ func newE2ENodePool(clusterRef string) *hyperfleetv1alpha1.NodePool {
 	}
 }
 
-func newE2EManifest(name string) *hyperfleetv1alpha1.Manifest {
+func newTestManifest(name string) *hyperfleetv1alpha1.Manifest {
 	return &hyperfleetv1alpha1.Manifest{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
-			Namespace: "111222333444",
+			Namespace: "mc01",
 		},
 		Spec: hyperfleetv1alpha1.ManifestSpec{
 			ManagementCluster: "mc01",

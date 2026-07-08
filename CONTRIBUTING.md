@@ -5,7 +5,7 @@
 - Go 1.24+
 - [controller-gen](https://book.kubebuilder.io/reference/controller-gen) (installed via `make controller-gen`)
 - [podman](https://podman.io/) or docker for building images
-- Container runtime (podman or docker) for DynamoDB Local in e2e tests
+- Container runtime (podman or docker) for Postgres + DynamoDB Local in integration tests
 
 ## Development Workflow
 
@@ -13,7 +13,7 @@
 # Generate CRDs and deepcopy
 make manifests generate
 
-# Run unit tests (envtest — no cluster needed)
+# Run unit tests
 make test
 
 # Build the binary
@@ -22,8 +22,8 @@ make build
 # Build the container image
 make docker-build IMG=quay.io/youruser/hyperfleet-operator:dev
 
-# Run e2e tests (envtest + DynamoDB Local container)
-make test-e2e
+# Run integration tests (Postgres + DynamoDB Local containers)
+make test-integration
 ```
 
 ## Adding a New CRD Field

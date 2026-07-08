@@ -19,61 +19,44 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
+	"strings"
 	"time"
-
-	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodbstreams"
+	"github.com/jmelis/postgres-controller-backend/pkg/pgruntime"
 	"k8s.io/apimachinery/pkg/runtime"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
-	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	hyperfleetv1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
-	crdbases "github.com/typeid/hyperfleet-operator/config/crd/bases"
+	v1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
+	"github.com/typeid/hyperfleet-operator/internal/bucket"
 	"github.com/typeid/hyperfleet-operator/internal/controller"
-	"github.com/typeid/hyperfleet-operator/internal/crdinstall"
 	"github.com/typeid/hyperfleet-operator/internal/dynamo"
 	"github.com/typeid/hyperfleet-operator/internal/dynamo/statusstream"
-	"github.com/typeid/hyperfleet-operator/internal/eksauth"
-	"github.com/typeid/hyperfleet-operator/internal/mcconfig"
 	"github.com/typeid/hyperfleet-operator/internal/render"
 )
 
-var (
-	scheme   = runtime.NewScheme()
-	setupLog = ctrl.Log.WithName("setup")
-)
-
-func init() {
-	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
-	utilruntime.Must(hyperfleetv1alpha1.AddToScheme(scheme))
-}
+var setupLog = ctrl.Log.WithName("setup")
 
 func main() {
 	var metricsAddr string
 	var probeAddr string
-	var enableLeaderElection bool
 	var awsRegion string
-	var fleetDBClusterName string
 	var baseDomain string
 	var maxConcurrentReconciles int
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metrics endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
-	flag.BoolVar(&enableLeaderElection, "leader-elect", true,
-		"Enable leader election for controller manager.")
 	flag.StringVar(&awsRegion, "aws-region", "", "AWS region for DynamoDB and EKS (required).")
-	flag.StringVar(&fleetDBClusterName, "fleet-db-cluster-name", "", "EKS cluster name for fleet-db (required).")
 	flag.StringVar(&baseDomain, "base-domain", "", "DNS base domain for hosted clusters (required).")
 	flag.IntVar(&maxConcurrentReconciles, "max-concurrent-reconciles", 10, "Maximum number of concurrent reconciles per controller.")
 
@@ -87,15 +70,36 @@ func main() {
 		setupLog.Error(nil, "--aws-region is required")
 		os.Exit(1)
 	}
-	if fleetDBClusterName == "" {
-		setupLog.Error(nil, "--fleet-db-cluster-name is required")
-		os.Exit(1)
-	}
 	if baseDomain == "" {
 		setupLog.Error(nil, "--base-domain is required")
 		os.Exit(1)
 	}
 
+	dsn := os.Getenv("POSTGRES_DSN")
+	if dsn == "" {
+		setupLog.Error(nil, "POSTGRES_DSN environment variable is required")
+		os.Exit(1)
+	}
+
+	bucketCount := envInt("BUCKET_COUNT", 1)
+	replicaCount := envInt("REPLICA_COUNT", 1)
+	ordinal, err := podOrdinal()
+	if err != nil {
+		setupLog.Error(err, "Failed to parse pod ordinal from hostname")
+		os.Exit(1)
+	}
+
+	bucketIDs := bucket.Slice(bucketCount, replicaCount, ordinal)
+	assigner := bucket.Assigner(bucketCount)
+
+	setupLog.Info("bucket sharding config",
+		"bucketCount", bucketCount,
+		"replicaCount", replicaCount,
+		"ordinal", ordinal,
+		"bucketIDs", bucketIDs,
+	)
+
+	signalCtx := ctrl.SetupSignalHandler()
 	ctx := context.Background()
 
 	// Load AWS config — credentials come from Pod Identity / IRSA automatically.
@@ -105,49 +109,33 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Build REST config for fleet-db using IAM authentication.
-	fleetDBConfig, err := eksauth.NewRESTConfig(ctx, awsCfg, fleetDBClusterName)
-	if err != nil {
-		setupLog.Error(err, "Failed to build fleet-db REST config")
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		setupLog.Error(err, "Failed to add v1alpha1 to scheme")
 		os.Exit(1)
 	}
 
-	// Ensure namespaces and CRDs exist on fleet-db before starting informers.
-	if err := crdinstall.Install(ctx, fleetDBConfig, "hyperfleet-system", crdbases.YAMLs); err != nil {
-		setupLog.Error(err, "Failed to install CRDs on fleet-db")
-		os.Exit(1)
-	}
-	if err := crdinstall.EnsureNamespace(ctx, fleetDBConfig, "zoa-jobs"); err != nil {
-		setupLog.Error(err, "Failed to ensure zoa-jobs namespace on fleet-db")
+	log := ctrl.Log.WithName("pgruntime")
+
+	mgr, err := pgruntime.NewManager(pgruntime.Options{
+		Scheme:         scheme,
+		DSN:            dsn,
+		BucketIDs:      bucketIDs,
+		BucketAssigner: assigner,
+		UnshardedGVKs: []schema.GroupVersionKind{
+			v1alpha1.SchemeGroupVersion.WithKind("ManagementCluster"),
+		},
+		Logger:                 log,
+		HealthProbeBindAddress: probeAddr,
+	})
+	if err != nil {
+		setupLog.Error(err, "Failed to create pgruntime manager")
 		os.Exit(1)
 	}
 
 	dynamoDBClient := dynamodb.NewFromConfig(awsCfg)
 	dynamoClient := dynamo.NewClient(dynamoDBClient)
 	streamsClient := dynamodbstreams.NewFromConfig(awsCfg)
-
-	mgr, err := ctrl.NewManager(fleetDBConfig, ctrl.Options{
-		Scheme: scheme,
-		Metrics: metricsserver.Options{
-			BindAddress: metricsAddr,
-		},
-		HealthProbeBindAddress: probeAddr,
-		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "c9f76021.hyperfleet.io",
-	})
-	if err != nil {
-		setupLog.Error(err, "Failed to start manager")
-		os.Exit(1)
-	}
-
-	// The mcconfig loader reads from the local RC cluster (in-cluster config),
-	// not fleet-db, because the management-clusters ConfigMap lives on the RC.
-	localClient, err := client.NewWithWatch(ctrl.GetConfigOrDie(), client.Options{Scheme: scheme})
-	if err != nil {
-		setupLog.Error(err, "Failed to create local cluster client")
-		os.Exit(1)
-	}
-	mcLoader := mcconfig.NewLoader(localClient)
 
 	rcfg := render.RegionalConfig{
 		BaseDomain: baseDomain,
@@ -185,7 +173,6 @@ func main() {
 	if err := (&controller.PlacementReconciler{
 		Client:                  mgr.GetClient(),
 		Scheme:                  mgr.GetScheme(),
-		MCConfig:                mcLoader,
 		MaxConcurrentReconciles: maxConcurrentReconciles,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "placement")
@@ -212,23 +199,50 @@ func main() {
 		os.Exit(1)
 	}
 
-	watchCtx, watchCancel := context.WithCancel(context.Background())
-	defer watchCancel()
-	go mcLoader.Watch(watchCtx, 5*time.Second, slog.Default())
-
 	streamMgr := statusstream.NewManager(
 		dynamoDBClient,
 		streamsClient,
-		mcLoader,
+		mgr.GetClient(),
 		[]string{dynamo.TableSuffixStatusApplyDesires, dynamo.TableSuffixStatusReadDesires},
 		func(documentID string) { eventRouter.Dispatch(documentID) },
 		slog.Default().With("component", "statusstream"),
 	)
+	watchCtx, watchCancel := context.WithCancel(context.Background())
+	defer watchCancel()
 	go streamMgr.Run(watchCtx, 5*time.Second)
 
-	setupLog.Info("Starting manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	setupLog.Info("Starting pgruntime manager")
+	if err := mgr.Start(signalCtx); err != nil {
 		setupLog.Error(err, "Failed to run manager")
 		os.Exit(1)
 	}
+}
+
+func envInt(key string, fallback int) int {
+	s := os.Getenv(key)
+	if s == "" {
+		return fallback
+	}
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		setupLog.Error(err, "Invalid integer env var", "key", key, "value", s)
+		os.Exit(1)
+	}
+	return v
+}
+
+// podOrdinal extracts the StatefulSet ordinal from the hostname.
+// e.g. "hyperfleet-operator-2" → 2. Returns 0 if no trailing number.
+func podOrdinal() (int, error) {
+	hostname, err := os.Hostname()
+	if err != nil {
+		return 0, fmt.Errorf("get hostname: %w", err)
+	}
+	parts := strings.Split(hostname, "-")
+	last := parts[len(parts)-1]
+	ordinal, err := strconv.Atoi(last)
+	if err != nil {
+		return 0, nil
+	}
+	return ordinal, nil
 }

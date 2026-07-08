@@ -35,7 +35,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	hyperfleetv1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
-	"github.com/typeid/hyperfleet-operator/internal/mcconfig"
 )
 
 const (
@@ -46,7 +45,6 @@ const (
 type PlacementReconciler struct {
 	client.Client
 	Scheme                  *runtime.Scheme
-	MCConfig                *mcconfig.Loader
 	MaxConcurrentReconciles int
 }
 
@@ -158,12 +156,15 @@ func (r *PlacementReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 }
 
 // TODO: Implement proper MC scheduling (least-loaded, capacity-aware, affinity).
-func (r *PlacementReconciler) selectManagementCluster(_ context.Context) (string, error) {
-	mcs := r.MCConfig.List()
-	if len(mcs) == 0 {
+func (r *PlacementReconciler) selectManagementCluster(ctx context.Context) (string, error) {
+	var list hyperfleetv1alpha1.ManagementClusterList
+	if err := r.List(ctx, &list); err != nil {
+		return "", fmt.Errorf("list management clusters: %w", err)
+	}
+	if len(list.Items) == 0 {
 		return "", fmt.Errorf("no management clusters configured")
 	}
-	return mcs[0].ID, nil
+	return list.Items[0].Name, nil
 }
 
 func (r *PlacementReconciler) SetupWithManager(mgr ctrl.Manager) error {

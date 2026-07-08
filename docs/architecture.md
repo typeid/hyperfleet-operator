@@ -2,33 +2,34 @@
 
 ## Overview
 
-The hyperfleet-operator is a Kubernetes-native cluster lifecycle controller for ROSA HCP. It watches Custom Resources on fleet-db and writes DynamoDB desires that kube-applier-aws applies to management clusters.
+The hyperfleet-operator is a cluster lifecycle controller for ROSA HCP. It watches Custom Resources stored in PostgreSQL (via pgruntime) and writes DynamoDB desires that kube-applier-aws applies to management clusters.
 
 ```mermaid
 graph LR
-    API[Platform API] -->|creates CRs| FleetDB[fleet-db EKS]
-    Operator[hyperfleet-operator] -->|watches CRs| FleetDB
+    API[Platform API] -->|creates CRs| PG[(PostgreSQL)]
+    Operator[hyperfleet-operator] -->|watches CRs| PG
     Operator -->|writes specs| DDB[(DynamoDB)]
     KA[kube-applier-aws] -->|reads specs| DDB
     KA -->|applies resources| MC[Management Cluster]
     KA -->|writes status| DDB
     Operator -->|reads status| DDB
-    Operator -->|updates CR status| FleetDB
+    Operator -->|updates CR status| PG
 ```
 
 ## Components
 
-### fleet-db
+### PostgreSQL (pgruntime)
 
-A workerless EKS cluster whose kube-apiserver serves as a strongly-consistent database. CRDs define the schema, CRs are the rows. The operator and the platform API both connect to fleet-db using EKS Pod Identity (IAM authentication via presigned STS tokens).
+The operator uses [postgres-controller-backend](https://github.com/jmelis/postgres-controller-backend) (`pgruntime`) to implement the controller-runtime `client.Client`, `cache.Cache`, and `manager.Manager` interfaces backed by PostgreSQL. This replaces a traditional Kubernetes API server (etcd) with a relational database, providing fenced writes, stored procedures, composite resource versions, and deterministic lease management.
 
 ### CRDs
 
-All CRDs are **namespace-scoped** under API group `hyperfleet.io/v1alpha1`. The namespace is the customer's AWS account ID (e.g., `123456789012`), providing natural multi-tenancy isolation on fleet-db. The cluster ID is `metadata.name`; in future a regional DynamoDB table will guarantee uniqueness across fleet-db shards.
+CRDs are under API group `hyperfleet.io/v1alpha1`. Most are **namespace-scoped** — the namespace is the cluster ID, with the account ID stored as a label. **ManagementCluster** is the exception: it is **cluster-scoped** and declared as an `UnshardedGVK` so every operator pod sees all ManagementClusters regardless of its bucket slice.
 
 - **Cluster** — represents a ROSA HCP cluster. Spec contains all the configuration needed to create a HostedCluster on a management cluster (networking, IAM roles, OIDC issuer, etc.).
 - **NodePool** — represents a set of worker nodes for a Cluster. References a parent Cluster via `spec.clusterRef`. Must be in the same namespace as its parent Cluster.
 - **Placement** — binds a Cluster to a management cluster. Created automatically by the Placement controller. Must be in the same namespace as its Cluster.
+- **ManagementCluster** — represents a management cluster in the fleet. Stores region and account metadata.
 - **Manifest** — deploys arbitrary Kubernetes resources to a management cluster. A generic pass-through: raw manifests are written as-is to DynamoDB ApplyDesires. Resources with `watch: true` also get ReadDesires, mirroring their live state from the MC back into the CR status. Used for ZOA (Zero Operator Actions) — deploying Jobs, RBAC, and supporting resources with status feedback — and for any infrastructure resource that doesn't warrant a dedicated controller.
 
 ### Controllers
@@ -72,23 +73,11 @@ For details on how controllers read, write, and delete specs, see [DynamoDB Read
 
 ### Management Cluster Registry
 
-The operator reads the list of available management clusters from the ConfigMap `management-clusters` in the `platform-api` namespace on the Regional Cluster. The platform API creates and updates this ConfigMap when registering management clusters. The operator polls it every 5 seconds via the Kubernetes API — this is a temporary data source, so we poll rather than building a full controller with informer watches.
-
-```yaml
-# ConfigMap management-clusters (key: clusters.yaml)
-- id: mc01
-  region: us-east-1
-  accountId: "123456789012"
-- id: mc02
-  region: us-east-1
-  accountId: "123456789012"
-```
-
-The Placement controller uses this registry to select a management cluster. Currently it picks the first available MC; a placement strategy is planned but not yet implemented.
+ManagementCluster CRs in PostgreSQL serve as the registry of available management clusters. The Placement controller reads this registry to select a management cluster for new Clusters.
 
 ## Deployment
 
-The operator runs on the Regional Cluster (RC) as a Deployment, deployed via a Helm chart through ArgoCD. It connects to fleet-db via IAM authentication (EKS Pod Identity) and to DynamoDB using the same IAM role.
+The operator runs as a StatefulSet, deployed via a Helm chart through ArgoCD. It connects to PostgreSQL for CR storage and to DynamoDB for desire management. The StatefulSet provides stable pod ordinals used for [bucket sharding](bucket-sharding.md).
 
 ```
 charts/hyperfleet-operator/
@@ -96,7 +85,8 @@ charts/hyperfleet-operator/
 ├── values.yaml
 ├── crds/                    # Auto-synced from config/crd/bases/ by make manifests
 └── templates/
-    ├── deployment.yaml
+    ├── statefulset.yaml
+    ├── headless-service.yaml
     ├── serviceaccount.yaml
     ├── clusterrole.yaml
     └── clusterrolebinding.yaml
@@ -104,33 +94,10 @@ charts/hyperfleet-operator/
 
 Required configuration:
 
-- `awsRegion` — AWS region for DynamoDB and EKS DescribeCluster
-- `fleetDBClusterName` — EKS cluster name for fleet-db
-- `serviceAccount.annotations` — IAM role ARN for Pod Identity
-- ConfigMap `management-clusters` in `platform-api` namespace — MC registry (created by the platform API)
+- `awsRegion` — AWS region for DynamoDB
+- `baseDomain` — DNS base domain for hosted clusters
+- `POSTGRES_DSN` — PostgreSQL connection string
 
-## Future Work: Horizontal Scaling via Multiple fleet-db Clusters
+## Horizontal Scaling via Bucket Sharding
 
-The current design uses a single fleet-db EKS cluster as the backing store for all CRs. As the number of managed clusters grows, the kube-apiserver on fleet-db becomes the scaling bottleneck.
-
-The architecture supports a future scale-out model where multiple fleet-db instances exist, each with its own dedicated operator:
-
-```mermaid
-graph TD
-    API[Platform API / Router] --> FDB1[fleet-db-1]
-    API --> FDB2[fleet-db-2]
-    OP1[operator-1] -->|watches| FDB1
-    OP2[operator-2] -->|watches| FDB2
-    OP1 -->|writes| DDB[(DynamoDB)]
-    OP2 -->|writes| DDB
-```
-
-In this model:
-
-- Each fleet-db holds a partition of the total cluster population
-- Each operator instance watches exactly one fleet-db — no cross-db coordination
-- DynamoDB tables remain shared (MC-scoped by table name, not by fleet-db)
-- The platform API routes cluster CRUD to the correct fleet-db based on a placement decision
-- Fleet-db instances can be independently scaled, upgraded, and failed over
-
-This requires no changes to the operator itself — it already connects to a single fleet-db via configuration. The main work is in the platform API (routing layer) and an assignment mechanism that decides which fleet-db hosts a given cluster.
+The operator scales horizontally via bucket-based sharding. Each resource is assigned a `bucket_id` using a namespace-based FNV-1a hash, giving cluster-level affinity — all resources for one cluster land in the same bucket. Each StatefulSet replica owns a slice of buckets derived from its pod ordinal. See [Bucket Sharding](bucket-sharding.md) for configuration and scaling details.

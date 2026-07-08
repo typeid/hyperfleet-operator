@@ -209,12 +209,9 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	// Read status feedback from DynamoDB and update Cluster status.
+	// Phase transitions (Provisioning, Ready) are handled inside updateStatusFromDynamo
+	// to avoid clobbering Ready with a stale in-memory phase check.
 	r.updateStatusFromDynamo(ctx, &cluster, statusPrefix, readDocID, applyEntries)
-
-	// Set phase to Provisioning if not yet available.
-	if cluster.Status.Phase == "" || cluster.Status.Phase == hyperfleetv1alpha1.ClusterPhaseWaitingForPlacement {
-		r.setPhase(ctx, &cluster, hyperfleetv1alpha1.ClusterPhaseProvisioning)
-	}
 
 	return ctrl.Result{RequeueAfter: statusRefreshDelay}, nil
 }
@@ -464,6 +461,8 @@ func (r *ClusterReconciler) updateStatusFromDynamo(ctx context.Context, cluster 
 		if meta.IsStatusConditionTrue(latest.Status.Conditions, "Available") &&
 			!meta.IsStatusConditionTrue(latest.Status.Conditions, "Degraded") {
 			latest.Status.Phase = hyperfleetv1alpha1.ClusterPhaseReady
+		} else if latest.Status.Phase == "" || latest.Status.Phase == hyperfleetv1alpha1.ClusterPhaseWaitingForPlacement {
+			latest.Status.Phase = hyperfleetv1alpha1.ClusterPhaseProvisioning
 		}
 		latest.Status.ObservedGeneration = latest.Generation
 		return r.Status().Update(ctx, &latest)
