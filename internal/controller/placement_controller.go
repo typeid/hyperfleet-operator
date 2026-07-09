@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -157,10 +158,13 @@ func (r *PlacementReconciler) selectManagementCluster(ctx context.Context) (stri
 	if err := r.List(ctx, &list); err != nil {
 		return "", fmt.Errorf("list management clusters: %w", err)
 	}
-	if len(list.Items) == 0 {
-		return "", fmt.Errorf("no management clusters configured")
+	for i := range list.Items {
+		// Skip fake MCs created by e2e tests.
+		if !strings.HasPrefix(list.Items[i].Name, "test-mc") {
+			return list.Items[i].Name, nil
+		}
 	}
-	return list.Items[0].Name, nil
+	return "", fmt.Errorf("no management clusters configured")
 }
 
 func (r *PlacementReconciler) SetupWithManager(mgr ctrl.Manager) error {
