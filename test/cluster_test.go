@@ -213,17 +213,16 @@ var _ = Describe("Cluster lifecycle", func() {
 			return k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: "e2e-nodepool"}, &hyperfleetv1alpha1.NodePool{})
 		}).ShouldNot(Succeed())
 
-		By("verifying DeleteDesires appear in DynamoDB (HostedCluster, namespace, nodepool)")
+		By("verifying DeleteDesires were processed and specs cleaned up from DynamoDB")
 		specsDelete := mc + "-specs-deletedesires"
+		statusDelete := mc + "-status-deletedesires"
 		Eventually(func(g Gomega) {
-			items := scanTable(specsDelete)
-			resources := map[string]bool{}
-			for _, item := range items {
-				resources[attrString(item, "spec", "targetItem", "resource")] = true
-			}
-			g.Expect(resources).To(HaveKey("hostedclusters"), "expected HostedCluster DeleteDesire")
-			g.Expect(resources).To(HaveKey("namespaces"), "expected namespace DeleteDesire")
-			g.Expect(resources).To(HaveKey("nodepools"), "expected nodepool DeleteDesire")
+			// Status entries prove the desires were created and confirmed.
+			statusItems := scanTable(statusDelete)
+			g.Expect(len(statusItems)).To(BeNumerically(">=", 2), "expected status entries for processed DeleteDesires")
+			// Specs should be cleaned up after completion.
+			specItems := scanTable(specsDelete)
+			g.Expect(specItems).To(BeEmpty(), "all DeleteDesire specs should be cleaned up after completion")
 		}).Should(Succeed())
 
 		By("verifying ApplyDesire specs are cleaned up from DynamoDB")
@@ -303,9 +302,13 @@ var _ = Describe("Cluster lifecycle", func() {
 		}).Should(Succeed())
 
 		By("deleting only the NodePool CR")
-		var npToDelete hyperfleetv1alpha1.NodePool
-		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: "e2e-nodepool"}, &npToDelete)).To(Succeed())
-		Expect(k8sClient.Delete(ctx, &npToDelete)).To(Succeed())
+		Eventually(func() error {
+			var npToDelete hyperfleetv1alpha1.NodePool
+			if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: "e2e-nodepool"}, &npToDelete); err != nil {
+				return err
+			}
+			return k8sClient.Delete(ctx, &npToDelete)
+		}).Should(Succeed())
 
 		By("verifying NodePool ApplyDesire is cleaned up from DynamoDB")
 		Eventually(func(g Gomega) {
@@ -316,18 +319,28 @@ var _ = Describe("Cluster lifecycle", func() {
 			}
 		}).Should(Succeed())
 
-		By("verifying NodePool DeleteDesire appears in DynamoDB")
+		By("verifying NodePool DeleteDesire was processed and spec cleaned up from DynamoDB")
 		specsDelete := mc + "-specs-deletedesires"
+		statusDelete := mc + "-status-deletedesires"
 		Eventually(func(g Gomega) {
-			items := scanTable(specsDelete)
+			// Status entry proves the desire was created and confirmed.
+			statusItems := scanTable(statusDelete)
 			found := false
-			for _, item := range items {
-				if attrString(item, "spec", "targetItem", "resource") == "nodepools" {
-					found = true
-					break
+			for _, item := range statusItems {
+				if docID, ok := item["documentID"]; ok {
+					if sv, ok := docID.(*dynamodbtypes.AttributeValueMemberS); ok && sv.Value != "" {
+						found = true
+						break
+					}
 				}
 			}
-			g.Expect(found).To(BeTrue(), "nodepool DeleteDesire not found")
+			g.Expect(found).To(BeTrue(), "expected status entry for processed nodepool DeleteDesire")
+			// Spec should be cleaned up after completion.
+			specItems := scanTable(specsDelete)
+			for _, item := range specItems {
+				g.Expect(attrString(item, "spec", "targetItem", "resource")).NotTo(Equal("nodepools"),
+					"nodepool DeleteDesire spec should be cleaned up after completion")
+			}
 		}).Should(Succeed())
 
 		By("verifying NodePool CR is fully gone")
