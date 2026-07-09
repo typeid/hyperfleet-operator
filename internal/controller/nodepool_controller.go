@@ -249,6 +249,11 @@ func (r *NodePoolReconciler) reconcileDelete(ctx context.Context, nodePool *hype
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
 
+		// Clean up DeleteDesire spec from DynamoDB.
+		if err := r.Dynamo.DeleteDesireSpec(ctx, specsPrefix, "-deletedesires", docID); err != nil {
+			log.Error(err, "failed to clean up DeleteDesire spec", "nodepool", m.Name)
+		}
+
 		// Clean up the NodePool ReadDesire spec from DynamoDB.
 		readDocID := dynamo.NewDocumentID(taskKey+"-read", m.Group, m.Version, m.Resource, ns, m.Name)
 		if err := r.Dynamo.DeleteDesireSpec(ctx, specsPrefix, "-readdesires", readDocID); err != nil {
