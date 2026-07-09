@@ -6,26 +6,37 @@ import (
 	hypershiftv1beta1 "github.com/openshift/hypershift/api/hypershift/v1beta1"
 	hyperfleetv1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 )
 
 func testNodePool() *hyperfleetv1alpha1.NodePool {
 	return &hyperfleetv1alpha1.NodePool{
-		ObjectMeta: metav1.ObjectMeta{Name: "workers"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "workers",
+			Namespace: "cluster-abc12345",
+		},
 		Spec: hyperfleetv1alpha1.NodePoolSpec{
-			ClusterRef: "abc12345",
-			Replicas:   3,
-			Management: hypershiftv1beta1.NodePoolManagement{
-				AutoRepair:  true,
-				UpgradeType: hypershiftv1beta1.UpgradeTypeReplace,
-			},
-			Release: hypershiftv1beta1.Release{Image: "quay.io/ocp:4.17"},
-			Platform: hyperfleetv1alpha1.NodePoolPlatformSpec{
-				AWS: hyperfleetv1alpha1.AWSNodePoolSpec{
-					InstanceType:    "m6a.xlarge",
-					RootVolume:      hypershiftv1beta1.Volume{Size: 120, Type: "gp3"},
-					SubnetID:        "subnet-1",
-					InstanceProfile: "worker-profile",
-					SecurityGroups:  []string{"sg-abc", "sg-def"},
+			NodePool: hypershiftv1beta1.NodePoolSpec{
+				Replicas: ptr.To(int32(3)),
+				Management: hypershiftv1beta1.NodePoolManagement{
+					AutoRepair:  true,
+					UpgradeType: hypershiftv1beta1.UpgradeTypeReplace,
+				},
+				Release: hypershiftv1beta1.Release{Image: "quay.io/ocp:4.17"},
+				Platform: hypershiftv1beta1.NodePoolPlatform{
+					Type: hypershiftv1beta1.AWSPlatform,
+					AWS: &hypershiftv1beta1.AWSNodePoolPlatform{
+						InstanceType:    "m6a.xlarge",
+						RootVolume:      &hypershiftv1beta1.Volume{Size: 120, Type: "gp3"},
+						InstanceProfile: "worker-profile",
+						Subnet: hypershiftv1beta1.AWSResourceReference{
+							ID: ptr.To("subnet-1"),
+						},
+						SecurityGroups: []hypershiftv1beta1.AWSResourceReference{
+							{ID: ptr.To("sg-abc")},
+							{ID: ptr.To("sg-def")},
+						},
+					},
 				},
 			},
 		},
@@ -53,7 +64,7 @@ func TestNodePoolResourceNaming(t *testing.T) {
 	if r.Name != wantName {
 		t.Errorf("Name = %q, want %q", r.Name, wantName)
 	}
-	wantNS := "clusters-abc12345"
+	wantNS := "cluster-abc12345"
 	if r.Namespace != wantNS {
 		t.Errorf("Namespace = %q, want %q", r.Namespace, wantNS)
 	}

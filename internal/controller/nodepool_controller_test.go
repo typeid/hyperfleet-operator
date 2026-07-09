@@ -22,6 +22,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -37,7 +38,7 @@ var _ = Describe("NodePool Controller", func() {
 		const (
 			clusterName  = "test-np-cluster"
 			nodePoolName = "test-nodepool"
-			testNS       = "test-cluster-id"
+			testNS       = "cluster-test-cluster-id"
 		)
 
 		ctx := context.Background()
@@ -69,7 +70,7 @@ var _ = Describe("NodePool Controller", func() {
 			cluster := newTestCluster(clusterName)
 			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
 
-			np := newTestNodePool(nodePoolName, clusterName)
+			np := newTestNodePool(nodePoolName)
 			Expect(k8sClient.Create(ctx, np)).To(Succeed())
 
 			reconciler := &NodePoolReconciler{
@@ -93,7 +94,7 @@ var _ = Describe("NodePool Controller", func() {
 			cluster := newTestCluster(clusterName)
 			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
 
-			np := newTestNodePool(nodePoolName, clusterName)
+			np := newTestNodePool(nodePoolName)
 			Expect(k8sClient.Create(ctx, np)).To(Succeed())
 
 			fd := &fakeDynamo{}
@@ -127,7 +128,7 @@ var _ = Describe("NodePool Controller", func() {
 			}
 			Expect(k8sClient.Status().Update(ctx, cluster)).To(Succeed())
 
-			np := newTestNodePool(nodePoolName, clusterName)
+			np := newTestNodePool(nodePoolName)
 			Expect(k8sClient.Create(ctx, np)).To(Succeed())
 
 			fd := &fakeDynamo{}
@@ -159,7 +160,7 @@ var _ = Describe("NodePool Controller", func() {
 			}
 			Expect(k8sClient.Status().Update(ctx, cluster)).To(Succeed())
 
-			np := newTestNodePool(nodePoolName, clusterName)
+			np := newTestNodePool(nodePoolName)
 			Expect(k8sClient.Create(ctx, np)).To(Succeed())
 
 			fd := &fakeDynamo{}
@@ -218,7 +219,7 @@ var _ = Describe("NodePool Controller", func() {
 			}
 			Expect(k8sClient.Status().Update(ctx, cluster)).To(Succeed())
 
-			np := newTestNodePool(nodePoolName, clusterName)
+			np := newTestNodePool(nodePoolName)
 			Expect(k8sClient.Create(ctx, np)).To(Succeed())
 
 			fd := &fakeDynamo{}
@@ -252,7 +253,7 @@ var _ = Describe("NodePool Controller", func() {
 			}
 			Expect(k8sClient.Status().Update(ctx, cluster)).To(Succeed())
 
-			np := newTestNodePool(nodePoolName, clusterName)
+			np := newTestNodePool(nodePoolName)
 			Expect(k8sClient.Create(ctx, np)).To(Succeed())
 
 			fd := &fakeDynamo{
@@ -299,7 +300,7 @@ var _ = Describe("NodePool Controller", func() {
 			}
 			Expect(k8sClient.Status().Update(ctx, cluster)).To(Succeed())
 
-			np := newTestNodePool(nodePoolName, clusterName)
+			np := newTestNodePool(nodePoolName)
 			Expect(k8sClient.Create(ctx, np)).To(Succeed())
 
 			fd := &fakeDynamo{
@@ -341,29 +342,36 @@ var _ = Describe("NodePool Controller", func() {
 	})
 })
 
-func newTestNodePool(name, clusterRef string) *hyperfleetv1alpha1.NodePool {
+func newTestNodePool(name string) *hyperfleetv1alpha1.NodePool {
 	return &hyperfleetv1alpha1.NodePool{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
-			Namespace: "test-cluster-id",
+			Namespace: "cluster-test-cluster-id",
 		},
 		Spec: hyperfleetv1alpha1.NodePoolSpec{
-			ClusterRef: clusterRef,
-			Replicas:   2,
-			Management: hypershiftv1beta1.NodePoolManagement{
-				AutoRepair:  true,
-				UpgradeType: hypershiftv1beta1.UpgradeTypeReplace,
-			},
-			Release: hypershiftv1beta1.Release{
-				Image: "quay.io/openshift-release-dev/ocp-release:4.17.0-ec.2-x86_64",
-			},
-			Platform: hyperfleetv1alpha1.NodePoolPlatformSpec{
-				AWS: hyperfleetv1alpha1.AWSNodePoolSpec{
-					InstanceType:    "m6a.xlarge",
-					RootVolume:      hypershiftv1beta1.Volume{Size: 120, Type: "gp3"},
-					SubnetID:        "subnet-abc123",
-					InstanceProfile: "worker-profile",
-					SecurityGroups:  []string{"sg-abc123"},
+			NodePool: hypershiftv1beta1.NodePoolSpec{
+				ClusterName: "test-np-cluster",
+				Replicas:    ptr.To(int32(2)),
+				Management: hypershiftv1beta1.NodePoolManagement{
+					AutoRepair:  true,
+					UpgradeType: hypershiftv1beta1.UpgradeTypeReplace,
+				},
+				Release: hypershiftv1beta1.Release{
+					Image: "quay.io/openshift-release-dev/ocp-release:4.17.0-ec.2-x86_64",
+				},
+				Platform: hypershiftv1beta1.NodePoolPlatform{
+					Type: hypershiftv1beta1.AWSPlatform,
+					AWS: &hypershiftv1beta1.AWSNodePoolPlatform{
+						InstanceType:    "m6a.xlarge",
+						RootVolume:      &hypershiftv1beta1.Volume{Size: 120, Type: "gp3"},
+						InstanceProfile: "worker-profile",
+						Subnet: hypershiftv1beta1.AWSResourceReference{
+							ID: ptr.To("subnet-abc123"),
+						},
+						SecurityGroups: []hypershiftv1beta1.AWSResourceReference{
+							{ID: ptr.To("sg-abc123")},
+						},
+					},
 				},
 			},
 		},
