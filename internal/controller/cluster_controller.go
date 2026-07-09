@@ -329,6 +329,13 @@ func (r *ClusterReconciler) reconcileDelete(ctx context.Context, cluster *hyperf
 		return result, nil
 	}
 
+	// Clean up DeleteDesire specs from DynamoDB.
+	for _, e := range deleteEntries {
+		if err := r.Dynamo.DeleteDesireSpec(ctx, specsPrefix, "-deletedesires", e.DocID); err != nil {
+			log.Error(err, "failed to clean up DeleteDesire spec", "resource", e.Resource, "name", e.Name)
+		}
+	}
+
 	// Clean up the HostedCluster ReadDesire spec from DynamoDB.
 	readDocID := dynamo.NewDocumentID(taskKey+"-read", "hypershift.openshift.io", "v1beta1", "hostedclusters", ns, hcName)
 	if err := r.Dynamo.DeleteDesireSpec(ctx, specsPrefix, "-readdesires", readDocID); err != nil {

@@ -147,18 +147,16 @@ var _ = Describe("Manifest lifecycle", func() {
 			g.Expect(items).To(BeEmpty(), "all ApplyDesire specs should be cleaned up on deletion")
 		}).Should(Succeed())
 
-		By("verifying DeleteDesires appear in DynamoDB")
+		By("verifying DeleteDesires were processed and specs cleaned up from DynamoDB")
 		specsDelete := mc + "-specs-deletedesires"
+		statusDelete := mc + "-status-deletedesires"
 		Eventually(func(g Gomega) {
-			items := scanTable(specsDelete)
-			resources := map[string]bool{}
-			for _, item := range items {
-				resources[attrString(item, "spec", "targetItem", "resource")] = true
-			}
-			g.Expect(resources).To(HaveKey("serviceaccounts"), "expected SA DeleteDesire")
-			g.Expect(resources).To(HaveKey("roles"), "expected Role DeleteDesire")
-			g.Expect(resources).To(HaveKey("rolebindings"), "expected RoleBinding DeleteDesire")
-			g.Expect(resources).To(HaveKey("jobs"), "expected Job DeleteDesire")
+			// Status entries prove the desires were created and confirmed.
+			statusItems := scanTable(statusDelete)
+			g.Expect(len(statusItems)).To(BeNumerically(">=", 4), "expected status entries for processed DeleteDesires")
+			// Specs should be cleaned up after completion.
+			specItems := scanTable(specsDelete)
+			g.Expect(specItems).To(BeEmpty(), "all DeleteDesire specs should be cleaned up after completion")
 		}).Should(Succeed())
 
 		By("verifying Manifest CR is fully gone")

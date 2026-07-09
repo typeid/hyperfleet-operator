@@ -327,6 +327,13 @@ func (r *ManifestReconciler) reconcileDelete(ctx context.Context, hfm *hyperflee
 		}
 	}
 
+	// Clean up DeleteDesire specs from DynamoDB.
+	for _, e := range entries {
+		if err := r.Dynamo.DeleteDesireSpec(ctx, specsPrefix, "-deletedesires", e.docID); err != nil {
+			log.Error(err, "failed to clean up DeleteDesire spec", "resource", e.resource, "name", e.name)
+		}
+	}
+
 	// Clean up ReadDesire specs from DynamoDB for watched resources.
 	readTaskKey := manifestScopedTaskKey(hfm) + "-read"
 	for _, res := range hfm.Spec.Resources {
