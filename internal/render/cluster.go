@@ -5,6 +5,7 @@ import (
 
 	configv1 "github.com/openshift/api/config/v1"
 	hypershiftv1beta1 "github.com/openshift/hypershift/api/hypershift/v1beta1"
+	"github.com/openshift/hypershift/api/util/ipnet"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -210,6 +211,22 @@ func hostedCluster(cluster *hyperfleetv1alpha1.Cluster, h4, zoneDomain string, r
 	if hcSpec.ControllerAvailabilityPolicy == "" {
 		hcSpec.ControllerAvailabilityPolicy = hypershiftv1beta1.HighlyAvailable
 	}
+	if len(hcSpec.Networking.ClusterNetwork) == 0 {
+		hcSpec.Networking.ClusterNetwork = []hypershiftv1beta1.ClusterNetworkEntry{
+			{CIDR: mustParseCIDR("10.132.0.0/14")},
+		}
+	}
+	if len(hcSpec.Networking.ServiceNetwork) == 0 {
+		hcSpec.Networking.ServiceNetwork = []hypershiftv1beta1.ServiceNetworkEntry{
+			{CIDR: mustParseCIDR("172.31.0.0/16")},
+		}
+	}
+	if len(hcSpec.Networking.MachineNetwork) == 0 {
+		hcSpec.Networking.MachineNetwork = []hypershiftv1beta1.MachineNetworkEntry{
+			{CIDR: mustParseCIDR("10.0.0.0/16")},
+		}
+	}
+	hcSpec.Release.Image = "quay.io/openshift-release-dev/ocp-release:5.0.0-ec.2-multi"
 
 	// --- Platform overrides ---
 	if hcSpec.Platform.AWS != nil {
@@ -315,6 +332,14 @@ func appendSystemTags(existing []hypershiftv1beta1.AWSResourceTag, clusterID str
 		})
 	}
 	return append(tags, existing...)
+}
+
+func mustParseCIDR(s string) ipnet.IPNet {
+	parsed, err := ipnet.ParseCIDR(s)
+	if err != nil {
+		panic(fmt.Sprintf("invalid CIDR %q: %v", s, err))
+	}
+	return *parsed
 }
 
 func sshKey(clusterID, ns string) Resource {

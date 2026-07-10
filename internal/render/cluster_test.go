@@ -4,20 +4,11 @@ import (
 	"testing"
 
 	hypershiftv1beta1 "github.com/openshift/hypershift/api/hypershift/v1beta1"
-	"github.com/openshift/hypershift/api/util/ipnet"
 	hyperfleetv1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 )
-
-func mustParseCIDR(s string) ipnet.IPNet {
-	parsed, err := ipnet.ParseCIDR(s)
-	if err != nil {
-		panic(err)
-	}
-	return *parsed
-}
 
 func testCluster() *hyperfleetv1alpha1.Cluster {
 	return &hyperfleetv1alpha1.Cluster{
