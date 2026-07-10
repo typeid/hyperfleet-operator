@@ -75,7 +75,11 @@ func CheckApplyDesireStatuses(
 		if cond.Status == metav1.ConditionTrue {
 			synced++
 		} else {
-			failedMessages = append(failedMessages, fmt.Sprintf("%s/%s: %s", e.Resource, e.Name, cond.Reason))
+			if cond.Message != "" {
+				failedMessages = append(failedMessages, fmt.Sprintf("%s/%s: %s: %s", e.Resource, e.Name, cond.Reason, cond.Message))
+			} else {
+				failedMessages = append(failedMessages, fmt.Sprintf("%s/%s: %s", e.Resource, e.Name, cond.Reason))
+			}
 		}
 	}
 
@@ -156,7 +160,11 @@ func CheckDeleteDesireStatuses(
 		if cond.Status == metav1.ConditionTrue {
 			deleted++
 		} else {
-			pendingMessages = append(pendingMessages, fmt.Sprintf("%s/%s: %s", e.Resource, e.Name, cond.Reason))
+			if cond.Message != "" {
+				pendingMessages = append(pendingMessages, fmt.Sprintf("%s/%s: %s: %s", e.Resource, e.Name, cond.Reason, cond.Message))
+			} else {
+				pendingMessages = append(pendingMessages, fmt.Sprintf("%s/%s: %s", e.Resource, e.Name, cond.Reason))
+			}
 		}
 	}
 

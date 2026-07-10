@@ -97,6 +97,70 @@ func TestNodePoolResourceObject(t *testing.T) {
 	}
 }
 
+func TestNodePoolResourceDefaults(t *testing.T) {
+	minimalNP := &hyperfleetv1alpha1.NodePool{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "workers",
+			Namespace: "cluster-abc12345",
+		},
+		Spec: hyperfleetv1alpha1.NodePoolSpec{
+			NodePool: hypershiftv1beta1.NodePoolSpec{
+				Platform: hypershiftv1beta1.NodePoolPlatform{
+					Type: hypershiftv1beta1.AWSPlatform,
+					AWS: &hypershiftv1beta1.AWSNodePoolPlatform{
+						InstanceProfile: "worker-profile",
+						Subnet:          hypershiftv1beta1.AWSResourceReference{ID: ptr.To("subnet-1")},
+						SecurityGroups:  []hypershiftv1beta1.AWSResourceReference{{ID: ptr.To("sg-abc")}},
+					},
+				},
+			},
+		},
+	}
+
+	r := NodePoolResource(minimalNP, testCluster())
+	np := r.Object.(*hypershiftv1beta1.NodePool)
+
+	tests := []struct {
+		name  string
+		check func(*testing.T)
+	}{
+		{"UpgradeType", func(t *testing.T) {
+			if np.Spec.Management.UpgradeType != hypershiftv1beta1.UpgradeTypeReplace {
+				t.Errorf("got %q, want %q", np.Spec.Management.UpgradeType, hypershiftv1beta1.UpgradeTypeReplace)
+			}
+		}},
+		{"AutoRepair", func(t *testing.T) {
+			if !np.Spec.Management.AutoRepair {
+				t.Error("got false, want true")
+			}
+		}},
+		{"Replicas", func(t *testing.T) {
+			if np.Spec.Replicas == nil || *np.Spec.Replicas != 2 {
+				t.Errorf("got %v, want 2", np.Spec.Replicas)
+			}
+		}},
+		{"InstanceType", func(t *testing.T) {
+			if np.Spec.Platform.AWS.InstanceType != "t3a.xlarge" {
+				t.Errorf("got %q, want %q", np.Spec.Platform.AWS.InstanceType, "t3a.xlarge")
+			}
+		}},
+		{"RootVolume.Size", func(t *testing.T) {
+			if np.Spec.Platform.AWS.RootVolume == nil || np.Spec.Platform.AWS.RootVolume.Size != 120 {
+				t.Errorf("got %v, want 120", np.Spec.Platform.AWS.RootVolume)
+			}
+		}},
+		{"RootVolume.Type", func(t *testing.T) {
+			if np.Spec.Platform.AWS.RootVolume == nil || np.Spec.Platform.AWS.RootVolume.Type != "gp3" {
+				t.Errorf("got %v, want gp3", np.Spec.Platform.AWS.RootVolume)
+			}
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, tt.check)
+	}
+}
+
 func TestNodePoolResourceLabels(t *testing.T) {
 	r := NodePoolResource(testNodePool(), testCluster())
 	np := r.Object.(*hypershiftv1beta1.NodePool)

@@ -21,6 +21,13 @@ func NodePoolResource(nodePool *hyperfleetv1alpha1.NodePool, cluster *hyperfleet
 	npSpec.ClusterName = clusterName
 	npSpec.Release.Image = "quay.io/openshift-release-dev/ocp-release:5.0.0-ec.2-multi"
 
+	if npSpec.Management.UpgradeType == "" {
+		npSpec.Management.UpgradeType = hypershiftv1beta1.UpgradeTypeReplace
+	}
+	if !npSpec.Management.AutoRepair {
+		npSpec.Management.AutoRepair = true
+	}
+
 	if npSpec.Replicas == nil {
 		npSpec.Replicas = ptr.To(int32(2))
 	}

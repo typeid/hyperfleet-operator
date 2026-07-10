@@ -52,13 +52,14 @@ var _ = Describe("CheckApplyDesireStatuses", func() {
 		fd := &fakeDynamo{
 			applyStatuses: map[string]*dynamo.ApplyDesireStatus{
 				"doc-a": {Conditions: []metav1.Condition{{Type: dynamo.DesireConditionSuccessful, Status: metav1.ConditionTrue, Reason: "NoErrors"}}, ObservedDesireUpdateTime: time.Now()},
-				"doc-b": {Conditions: []metav1.Condition{{Type: dynamo.DesireConditionSuccessful, Status: metav1.ConditionFalse, Reason: "KubeAPIError"}}, ObservedDesireUpdateTime: time.Now()},
+				"doc-b": {Conditions: []metav1.Condition{{Type: dynamo.DesireConditionSuccessful, Status: metav1.ConditionFalse, Reason: "KubeAPIError", Message: "server-side apply: NodePool is invalid"}}, ObservedDesireUpdateTime: time.Now()},
 			},
 		}
 		cond := CheckApplyDesireStatuses(ctx, fd, "status-prefix", entries("doc-a", "doc-b"), 1)
 		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 		Expect(cond.Reason).To(Equal("SyncFailed"))
 		Expect(cond.Message).To(ContainSubstring("KubeAPIError"))
+		Expect(cond.Message).To(ContainSubstring("server-side apply: NodePool is invalid"))
 	})
 
 	It("should return SyncFailed when DynamoDB returns a non-NotFound error", func() {
