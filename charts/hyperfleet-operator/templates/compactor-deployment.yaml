@@ -2,7 +2,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "hyperfleet-operator.fullname" . }}-compactor
+  name: hyperfleet-db-compactor
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "hyperfleet-operator.labels" . | nindent 4 }}
