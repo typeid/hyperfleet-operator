@@ -14,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	dynamodbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // ErrNotFound is returned when a desire item does not exist in DynamoDB.
@@ -203,7 +204,7 @@ func (c *Client) putDesireWithHash(ctx context.Context, table, documentID string
 	}
 
 	if specMap, ok := spec.(ApplyDesireSpec); ok && specMap.ServerSideApply != nil && specMap.ServerSideApply.KubeContent != nil {
-		item["spec_kubeContent"] = &dynamodbtypes.AttributeValueMemberS{Value: string(specMap.ServerSideApply.KubeContent)}
+		item["spec_kubeContent"] = &dynamodbtypes.AttributeValueMemberS{Value: string(specMap.ServerSideApply.KubeContent.Raw)}
 		if ssa, ok := specAttrs["serverSideApply"]; ok {
 			if ssaMap, ok := ssa.(*dynamodbtypes.AttributeValueMemberM); ok {
 				delete(ssaMap.Value, "kubeContent")
@@ -245,16 +246,22 @@ func (c *Client) getDesireStatus(ctx context.Context, table, documentID string, 
 		}
 	}
 
-	// Inject kubeContent from the top-level string attribute into the status map.
-	if av, ok := result.Item["status_kubeContent"]; ok {
-		if sv, ok := av.(*dynamodbtypes.AttributeValueMemberS); ok {
-			statusAttrs["kubeContent"] = &dynamodbtypes.AttributeValueMemberB{Value: []byte(sv.Value)}
-		}
-	}
-
 	if err := attributevalue.UnmarshalMap(statusAttrs, out); err != nil {
 		return fmt.Errorf("unmarshal %s/%s: %w", table, documentID, err)
 	}
+
+	// ReadDesireStatus.KubeContent is tagged dynamodbav:"-" in the shared type
+	// (mirroring kube-applier-aws's codec), so the standard unmarshaller skips
+	// it. Manually populate it from the top-level status_kubeContent attribute
+	// that kube-applier-aws writes.
+	if rs, ok := out.(*ReadDesireStatus); ok {
+		if av, ok := result.Item["status_kubeContent"]; ok {
+			if sv, ok := av.(*dynamodbtypes.AttributeValueMemberS); ok && sv.Value != "" {
+				rs.KubeContent = &runtime.RawExtension{Raw: []byte(sv.Value)}
+			}
+		}
+	}
+
 	return nil
 }
 

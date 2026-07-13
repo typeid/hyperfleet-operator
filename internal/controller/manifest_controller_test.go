@@ -125,7 +125,8 @@ var _ = Describe("Manifest Controller", func() {
 			// Verify KubeContent is the raw JSON from spec.
 			for _, a := range fd.applies {
 				Expect(a.Spec.ServerSideApply).NotTo(BeNil())
-				Expect(a.Spec.ServerSideApply.KubeContent).NotTo(BeEmpty())
+				Expect(a.Spec.ServerSideApply.KubeContent).NotTo(BeNil())
+				Expect(a.Spec.ServerSideApply.KubeContent.Raw).NotTo(BeEmpty())
 			}
 		})
 
@@ -389,7 +390,7 @@ var _ = Describe("Manifest Controller", func() {
 			kubeContent := []byte(`{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"collect-logs-abc123","namespace":"zoa-actions"},"status":{"succeeded":1,"startTime":"2026-06-25T10:00:00Z","completionTime":"2026-06-25T10:00:05Z"}}`)
 			fd := &fakeDynamo{
 				readStatus: &dynamo.ReadDesireStatus{
-					KubeContent: kubeContent,
+					KubeContent: &runtime.RawExtension{Raw: kubeContent},
 				},
 			}
 			reconciler := &ManifestReconciler{
@@ -513,7 +514,7 @@ var _ = Describe("Manifest Controller", func() {
 
 			fd := &fakeDynamo{
 				readStatus: &dynamo.ReadDesireStatus{
-					KubeContent: []byte(`{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"collect-logs-abc123","namespace":"zoa-actions"},"status":{"succeeded":1}}`),
+					KubeContent: &runtime.RawExtension{Raw: []byte(`{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"collect-logs-abc123","namespace":"zoa-actions"},"status":{"succeeded":1}}`)},
 				},
 			}
 			er := NewEventRouter()

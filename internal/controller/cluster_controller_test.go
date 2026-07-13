@@ -22,6 +22,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -288,7 +289,7 @@ var _ = Describe("Cluster Controller", func() {
 					}},
 				},
 				readStatus: &dynamo.ReadDesireStatus{
-					KubeContent: []byte(`{
+					KubeContent: &runtime.RawExtension{Raw: []byte(`{
 						"status": {
 							"conditions": [
 								{"type": "Available", "status": "True", "reason": "HostedClusterAsExpected", "lastTransitionTime": "2026-06-25T10:00:00Z"},
@@ -302,7 +303,7 @@ var _ = Describe("Cluster Controller", func() {
 								"port": 6443
 							}
 						}
-					}`),
+					}`)},
 				},
 			}
 			reconciler := &ClusterReconciler{
@@ -370,14 +371,14 @@ var _ = Describe("Cluster Controller", func() {
 					}},
 				},
 				readStatus: &dynamo.ReadDesireStatus{
-					KubeContent: []byte(`{
+					KubeContent: &runtime.RawExtension{Raw: []byte(`{
 						"status": {
 							"conditions": [
 								{"type": "Available", "status": "True", "reason": "HostedClusterAsExpected", "lastTransitionTime": "2026-06-25T10:00:00Z"},
 								{"type": "Degraded", "status": "True", "reason": "ComponentFailing", "lastTransitionTime": "2026-06-25T10:00:00Z"}
 							]
 						}
-					}`),
+					}`)},
 				},
 			}
 			reconciler := &ClusterReconciler{

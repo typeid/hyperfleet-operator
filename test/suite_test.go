@@ -316,8 +316,8 @@ var _ = BeforeSuite(func() {
 					_, _ = dynamoDBCli.PutItem(ctx, &dynamodb.PutItemInput{
 						TableName: aws.String(statusTable),
 						Item: map[string]dynamodbtypes.AttributeValue{
-							"documentID":  docID,
-							"kubeContent": &dynamodbtypes.AttributeValueMemberB{Value: completedJob},
+							"documentID":          docID,
+							"status_kubeContent":  &dynamodbtypes.AttributeValueMemberS{Value: string(completedJob)},
 						},
 						ConditionExpression: aws.String("attribute_not_exists(documentID)"),
 					})

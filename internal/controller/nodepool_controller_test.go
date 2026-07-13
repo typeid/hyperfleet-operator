@@ -21,6 +21,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -267,7 +268,7 @@ var _ = Describe("NodePool Controller", func() {
 					}},
 				},
 				readStatus: &dynamo.ReadDesireStatus{
-					KubeContent: []byte(`{"status":{"conditions":[{"type":"Ready","status":"True","reason":"AsExpected","message":"All nodes ready","lastTransitionTime":"2026-06-25T10:00:00Z"}]}}`),
+					KubeContent: &runtime.RawExtension{Raw: []byte(`{"status":{"conditions":[{"type":"Ready","status":"True","reason":"AsExpected","message":"All nodes ready","lastTransitionTime":"2026-06-25T10:00:00Z"}]}}`)},
 				},
 			}
 			reconciler := &NodePoolReconciler{

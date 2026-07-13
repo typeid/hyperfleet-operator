@@ -125,9 +125,9 @@ func (r *ManifestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 					Namespace: namespace,
 					Name:      name,
 				},
-				ServerSideApply: &dynamo.ServerSideApplyConfig{
-					KubeContent: res.Content.Raw,
-				},
+			ServerSideApply: &dynamo.ServerSideApplyConfig{
+				KubeContent: &res.Content,
+			},
 			},
 		}
 		applyItems = append(applyItems, applyItem{desire: desire, docID: docID, resource: res.Resource, name: name})
@@ -449,7 +449,7 @@ func (r *ManifestReconciler) collectResourceStatuses(ctx context.Context, hfm *h
 		var obj struct {
 			Status json.RawMessage `json:"status"`
 		}
-		if err := json.Unmarshal(results[i].status.KubeContent, &obj); err != nil {
+		if err := json.Unmarshal(results[i].status.KubeContent.Raw, &obj); err != nil {
 			log.Error(err, "failed to unmarshal KubeContent", "resource", w.resource, "name", w.name)
 			continue
 		}

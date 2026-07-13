@@ -158,7 +158,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 						Name:      m.Name,
 					},
 					ServerSideApply: &dynamo.ServerSideApplyConfig{
-						KubeContent: content,
+						KubeContent: &runtime.RawExtension{Raw: content},
 					},
 				},
 			}
@@ -430,7 +430,7 @@ func (r *ClusterReconciler) updateStatusFromDynamo(ctx context.Context, cluster 
 		} `json:"status"`
 	}
 	if readStatus != nil && readStatus.KubeContent != nil {
-		if err := json.Unmarshal(readStatus.KubeContent, &hc); err != nil {
+		if err := json.Unmarshal(readStatus.KubeContent.Raw, &hc); err != nil {
 			log.Error(err, "Failed to unmarshal HostedCluster status")
 		}
 	}

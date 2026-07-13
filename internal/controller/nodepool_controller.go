@@ -134,9 +134,9 @@ func (r *NodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 				Namespace: ns,
 				Name:      m.Name,
 			},
-			ServerSideApply: &dynamo.ServerSideApplyConfig{
-				KubeContent: content,
-			},
+		ServerSideApply: &dynamo.ServerSideApplyConfig{
+			KubeContent: &runtime.RawExtension{Raw: content},
+		},
 		},
 	}
 	readDesire := &dynamo.ReadDesire{
@@ -308,7 +308,7 @@ func (r *NodePoolReconciler) updateStatusFromDynamo(ctx context.Context, nodePoo
 				Conditions []metav1.Condition `json:"conditions"`
 			} `json:"status"`
 		}
-		if err := json.Unmarshal(readStatus.KubeContent, &np); err != nil {
+		if err := json.Unmarshal(readStatus.KubeContent.Raw, &np); err != nil {
 			log.Error(err, "Failed to unmarshal NodePool status")
 		} else {
 			npConditions = np.Status.Conditions
