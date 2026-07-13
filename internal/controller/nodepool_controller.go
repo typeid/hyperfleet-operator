@@ -124,6 +124,7 @@ func (r *NodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	desire := &dynamo.ApplyDesire{
 		DynamoDBMetadata: dynamo.DynamoDBMetadata{DocumentID: docID},
 		Spec: dynamo.ApplyDesireSpec{
+			Type:              dynamo.ApplyDesireTypeServerSideApply,
 			ManagementCluster: mc,
 			ClusterID:         render.ClusterIDFromNamespace(cluster.Namespace),
 			TargetItem: dynamo.ResourceReference{
@@ -133,7 +134,9 @@ func (r *NodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 				Namespace: ns,
 				Name:      m.Name,
 			},
-			KubeContent: content,
+			ServerSideApply: &dynamo.ServerSideApplyConfig{
+				KubeContent: content,
+			},
 		},
 	}
 	readDesire := &dynamo.ReadDesire{

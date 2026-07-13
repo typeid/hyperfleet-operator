@@ -115,6 +115,7 @@ func (r *ManifestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		desire := &dynamo.ApplyDesire{
 			DynamoDBMetadata: dynamo.DynamoDBMetadata{DocumentID: docID},
 			Spec: dynamo.ApplyDesireSpec{
+				Type:              dynamo.ApplyDesireTypeServerSideApply,
 				ManagementCluster: mc,
 				ClusterID:         hfm.Name,
 				TargetItem: dynamo.ResourceReference{
@@ -124,7 +125,9 @@ func (r *ManifestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 					Namespace: namespace,
 					Name:      name,
 				},
-				KubeContent: res.Content.Raw,
+				ServerSideApply: &dynamo.ServerSideApplyConfig{
+					KubeContent: res.Content.Raw,
+				},
 			},
 		}
 		applyItems = append(applyItems, applyItem{desire: desire, docID: docID, resource: res.Resource, name: name})

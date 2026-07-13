@@ -124,7 +124,8 @@ var _ = Describe("Manifest Controller", func() {
 
 			// Verify KubeContent is the raw JSON from spec.
 			for _, a := range fd.applies {
-				Expect(a.Spec.KubeContent).NotTo(BeEmpty())
+				Expect(a.Spec.ServerSideApply).NotTo(BeNil())
+				Expect(a.Spec.ServerSideApply.KubeContent).NotTo(BeEmpty())
 			}
 		})
 

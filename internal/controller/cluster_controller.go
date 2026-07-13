@@ -147,6 +147,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			desire := &dynamo.ApplyDesire{
 				DynamoDBMetadata: dynamo.DynamoDBMetadata{DocumentID: docID},
 				Spec: dynamo.ApplyDesireSpec{
+					Type:              dynamo.ApplyDesireTypeServerSideApply,
 					ManagementCluster: mc,
 					ClusterID:         clusterID,
 					TargetItem: dynamo.ResourceReference{
@@ -156,7 +157,9 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 						Namespace: m.Namespace,
 						Name:      m.Name,
 					},
-					KubeContent: content,
+					ServerSideApply: &dynamo.ServerSideApplyConfig{
+						KubeContent: content,
+					},
 				},
 			}
 			res, upsertErr := r.Dynamo.UpsertApplyDesire(ctx, specsPrefix, desire)

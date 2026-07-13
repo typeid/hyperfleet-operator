@@ -202,9 +202,13 @@ func (c *Client) putDesireWithHash(ctx context.Context, table, documentID string
 		item["specHash"] = &dynamodbtypes.AttributeValueMemberS{Value: specHash}
 	}
 
-	if specMap, ok := spec.(ApplyDesireSpec); ok && specMap.KubeContent != nil {
-		item["spec_kubeContent"] = &dynamodbtypes.AttributeValueMemberS{Value: string(specMap.KubeContent)}
-		delete(specAttrs, "kubeContent")
+	if specMap, ok := spec.(ApplyDesireSpec); ok && specMap.ServerSideApply != nil && specMap.ServerSideApply.KubeContent != nil {
+		item["spec_kubeContent"] = &dynamodbtypes.AttributeValueMemberS{Value: string(specMap.ServerSideApply.KubeContent)}
+		if ssa, ok := specAttrs["serverSideApply"]; ok {
+			if ssaMap, ok := ssa.(*dynamodbtypes.AttributeValueMemberM); ok {
+				delete(ssaMap.Value, "kubeContent")
+			}
+		}
 	}
 
 	_, err = c.db.PutItem(ctx, &dynamodb.PutItemInput{

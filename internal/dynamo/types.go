@@ -32,28 +32,46 @@ type DynamoDBMetadata struct {
 	CreateTime time.Time `json:"createTime,omitempty" dynamodbav:"createTime,omitempty"`
 }
 
-// ApplyDesireType indicates whether an ApplyDesire should apply or delete the target resource.
+// ApplyDesireType discriminates the operation an ApplyDesire performs.
+// Matches the type values used by kube-applier-aws.
 type ApplyDesireType string
 
 const (
-	ApplyDesireTypeApply  ApplyDesireType = "apply"
-	ApplyDesireTypeDelete ApplyDesireType = "delete"
+	// ApplyDesireTypeServerSideApply indicates a server-side-apply of
+	// Spec.ServerSideApply.KubeContent to the management cluster.
+	ApplyDesireTypeServerSideApply ApplyDesireType = "ServerSideApply"
+
+	// ApplyDesireTypeDelete indicates a deletion of Spec.TargetItem from
+	// the management cluster. Spec.ServerSideApply must be nil.
+	ApplyDesireTypeDelete ApplyDesireType = "Delete"
 )
 
-// ApplyDesire holds a single Kubernetes object to be server-side-applied or deleted.
+// ApplyDesire holds a single intent to either server-side-apply a Kubernetes
+// object or delete one from the management cluster's apiserver.
 type ApplyDesire struct {
 	DynamoDBMetadata `json:"dynamodbMetadata" dynamodbav:",omitempty"`
 	Spec             ApplyDesireSpec   `json:"spec"   dynamodbav:"spec"`
 	Status           ApplyDesireStatus `json:"status" dynamodbav:"status"`
 }
 
+// ApplyDesireSpec is discriminated by Type:
+//   - Type=ServerSideApply: ServerSideApply must be non-nil and contains the
+//     manifest to apply.
+//   - Type=Delete: ServerSideApply must be nil; TargetItem identifies the
+//     object to delete.
 type ApplyDesireSpec struct {
-	Type              ApplyDesireType   `json:"type,omitempty"          dynamodbav:"type,omitempty"`
-	ManagementCluster string            `json:"managementCluster"       dynamodbav:"managementCluster"`
-	ClusterID         string            `json:"clusterID"               dynamodbav:"clusterID"`
-	NodePoolName      string            `json:"nodePoolName,omitempty"  dynamodbav:"nodePoolName,omitempty"`
-	TargetItem        ResourceReference `json:"targetItem"              dynamodbav:"targetItem"`
-	KubeContent       []byte            `json:"kubeContent,omitempty"   dynamodbav:"kubeContent,omitempty"`
+	Type              ApplyDesireType      `json:"type,omitempty"           dynamodbav:"type,omitempty"`
+	ManagementCluster string               `json:"managementCluster"        dynamodbav:"managementCluster"`
+	ClusterID         string               `json:"clusterID"                dynamodbav:"clusterID"`
+	NodePoolName      string               `json:"nodePoolName,omitempty"   dynamodbav:"nodePoolName,omitempty"`
+	TargetItem        ResourceReference    `json:"targetItem"               dynamodbav:"targetItem"`
+	ServerSideApply   *ServerSideApplyConfig `json:"serverSideApply,omitempty" dynamodbav:"serverSideApply,omitempty"`
+}
+
+// ServerSideApplyConfig holds the manifest for a ServerSideApply desire.
+type ServerSideApplyConfig struct {
+	// KubeContent is the raw JSON of the Kubernetes object to apply.
+	KubeContent []byte `json:"kubeContent,omitempty" dynamodbav:"-"`
 }
 
 type ApplyDesireStatus struct {
