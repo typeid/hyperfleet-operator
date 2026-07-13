@@ -185,7 +185,7 @@ var _ = Describe("Cluster Controller", func() {
 				NamespacedName: types.NamespacedName{Namespace: testNS, Name: clusterName},
 			})
 
-			// Set placementRef so the deletion path writes DeleteDesires.
+			// Set placementRef so the deletion path writes delete desires.
 			var updated hyperfleetv1alpha1.Cluster
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: clusterName}, &updated)).To(Succeed())
 			updated.Status.PlacementRef = &hyperfleetv1alpha1.PlacementReference{
@@ -198,13 +198,14 @@ var _ = Describe("Cluster Controller", func() {
 			Expect(k8sClient.Delete(ctx, &updated)).To(Succeed())
 
 			// First deletion reconcile: cleans up ApplyDesires, writes HostedCluster
-			// DeleteDesire but no confirmation yet → requeues.
+			// delete desire but no confirmation yet → requeues.
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Namespace: testNS, Name: clusterName},
 			})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(fd.deleteCount).To(Equal(1))
-			Expect(fd.deletes[0].Spec.TargetItem.Resource).To(Equal("hostedclusters"))
+			deleteApplies := filterDeleteDesires(fd.applies)
+			Expect(len(deleteApplies)).To(Equal(1))
+			Expect(deleteApplies[0].Spec.TargetItem.Resource).To(Equal("hostedclusters"))
 			Expect(result.RequeueAfter).NotTo(BeZero(), "should requeue while waiting for HostedCluster deletion")
 
 			// Placement should still exist (not reached yet).
@@ -213,7 +214,7 @@ var _ = Describe("Cluster Controller", func() {
 
 			// Simulate kube-applier-aws acknowledging the delete but resource
 			// still terminating (Successful=False, WaitingForDeletion).
-			fd.deleteStatus = &dynamo.DeleteDesireStatus{
+			fd.applyStatus = &dynamo.ApplyDesireStatus{
 				Conditions: []metav1.Condition{{
 					Type:   dynamo.DesireConditionSuccessful,
 					Status: metav1.ConditionFalse,
@@ -226,11 +227,12 @@ var _ = Describe("Cluster Controller", func() {
 				NamespacedName: types.NamespacedName{Namespace: testNS, Name: clusterName},
 			})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(fd.deleteCount).To(Equal(2)) // HC rewritten
+			deleteApplies = filterDeleteDesires(fd.applies)
+			Expect(len(deleteApplies)).To(Equal(2)) // HC rewritten
 			Expect(result.RequeueAfter).NotTo(BeZero(), "should requeue while resource still terminating")
 
 			// Simulate resource fully deleted (Successful=True, NoErrors).
-			fd.deleteStatus = &dynamo.DeleteDesireStatus{
+			fd.applyStatus = &dynamo.ApplyDesireStatus{
 				Conditions: []metav1.Condition{{
 					Type:   dynamo.DesireConditionSuccessful,
 					Status: metav1.ConditionTrue,
@@ -239,20 +241,21 @@ var _ = Describe("Cluster Controller", func() {
 			}
 
 			// Third deletion reconcile: HC confirmed gone → writes namespace
-			// DeleteDesire → namespace confirmed → deletes Placement, removes finalizer.
+			// delete desire → namespace confirmed → deletes Placement, removes finalizer.
 			_, err = reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Namespace: testNS, Name: clusterName},
 			})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(fd.deleteCount).To(Equal(4)) // HC (rewritten) + NS
-			Expect(fd.deletes[2].Spec.TargetItem.Resource).To(Equal("hostedclusters"))
-			Expect(fd.deletes[3].Spec.TargetItem.Resource).To(Equal("namespaces"))
+			deleteApplies = filterDeleteDesires(fd.applies)
+			Expect(len(deleteApplies)).To(Equal(4)) // HC (rewritten) + NS
+			Expect(deleteApplies[2].Spec.TargetItem.Resource).To(Equal("hostedclusters"))
+			Expect(deleteApplies[3].Spec.TargetItem.Resource).To(Equal("namespaces"))
 
 			// Verify the Placement was deleted.
 			err = k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: clusterName + "-placement"}, &p)
 			Expect(err).To(HaveOccurred())
 
-			// Verify ApplyDesire specs were cleaned up before DeleteDesires,
+			// Verify ApplyDesire specs were cleaned up,
 			// and the ReadDesire spec was cleaned up after confirmation.
 			// 7 ApplyDesire cleanups per reconcile pass (3 passes: initial, waiting, final), 1 ReadDesire cleanup.
 			applyCleanups, readCleanups := fd.countSpecCleanups()
@@ -482,4 +485,15 @@ func newTestCluster(name string) *hyperfleetv1alpha1.Cluster {
 			},
 		},
 	}
+}
+
+// filterDeleteDesires returns ApplyDesires that have Type=Delete.
+func filterDeleteDesires(applies []*dynamo.ApplyDesire) []*dynamo.ApplyDesire {
+	var out []*dynamo.ApplyDesire
+	for _, a := range applies {
+		if a.Spec.Type == dynamo.ApplyDesireTypeDelete {
+			out = append(out, a)
+		}
+	}
+	return out
 }

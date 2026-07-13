@@ -246,7 +246,7 @@ func (r *ClusterReconciler) reconcileDelete(ctx context.Context, cluster *hyperf
 	}
 
 	// Step 1: Delete NodePools and HostedCluster simultaneously.
-	// The HostedCluster DeleteDesire must be written before or alongside
+	// The HostedCluster delete desire must be written before or alongside
 	// NodePool deletion so HyperShift sees the cluster is terminating and
 	// skips node drains, which otherwise stall on PDBs.
 	var nodePools hyperfleetv1alpha1.NodePoolList
@@ -265,13 +265,10 @@ func (r *ClusterReconciler) reconcileDelete(ctx context.Context, cluster *hyperf
 		pendingNodePools++
 	}
 
-	clusterID := render.ClusterIDFromNamespace(cluster.Namespace)
-	clusterName := cluster.Name // human-readable
-
 	specsPrefix := dynamo.SpecsPrefix(mc)
 	statusPrefix := dynamo.StatusPrefix(mc)
 	ns := cluster.Namespace
-	hcName := clusterName
+	hcName := cluster.Name
 
 	// Remove all ApplyDesire specs to prevent kube-applier from racing
 	// and re-applying resources that are being deleted.
@@ -300,40 +297,33 @@ func (r *ClusterReconciler) reconcileDelete(ctx context.Context, cluster *hyperf
 		{DocID: dynamo.NewDocumentID(taskKey+"-delete", nsRef.Group, nsRef.Version, nsRef.Resource, nsRef.Namespace, nsRef.Name), Resource: nsRef.Resource, Name: nsRef.Name},
 	}
 
-	// Write the HostedCluster DeleteDesire and check its status.
-	hcResult, err := r.writeAndWaitDeleteDesire(ctx, specsPrefix, statusPrefix, mc, clusterID, hcRef)
+	// Write the HostedCluster delete desire and check its status.
+	hcResult, err := r.writeAndWaitApplyDesireDelete(ctx, specsPrefix, statusPrefix, mc, cluster.Name, hcRef)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("delete hostedcluster: %w", err)
 	}
 
 	if !hcResult.IsZero() {
 		log.Info("Waiting for HostedCluster deletion", "hostedCluster", hcName)
-		r.setSyncedCondition(ctx, cluster, CheckDeleteDesireStatuses(ctx, r.Dynamo, statusPrefix, deleteEntries, cluster.Generation))
+		r.setSyncedCondition(ctx, cluster, CheckApplyDesireStatuses(ctx, r.Dynamo, statusPrefix, deleteEntries, cluster.Generation))
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
 	// Step 2: Wait for NodePool CRs to be fully deleted.
 	if pendingNodePools > 0 {
 		log.Info("Waiting for NodePools to be deleted", "count", pendingNodePools)
-		r.setSyncedCondition(ctx, cluster, CheckDeleteDesireStatuses(ctx, r.Dynamo, statusPrefix, deleteEntries, cluster.Generation))
+		r.setSyncedCondition(ctx, cluster, CheckApplyDesireStatuses(ctx, r.Dynamo, statusPrefix, deleteEntries, cluster.Generation))
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
 	// Step 3: Delete the cluster namespace to clean up all remaining resources.
-	if result, err := r.writeAndWaitDeleteDesire(ctx, specsPrefix, statusPrefix, mc, clusterID, nsRef); err != nil || !result.IsZero() {
+	if result, err := r.writeAndWaitApplyDesireDelete(ctx, specsPrefix, statusPrefix, mc, cluster.Name, nsRef); err != nil || !result.IsZero() {
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("delete namespace: %w", err)
 		}
 		log.Info("Waiting for namespace deletion", "namespace", ns)
-		r.setSyncedCondition(ctx, cluster, CheckDeleteDesireStatuses(ctx, r.Dynamo, statusPrefix, deleteEntries, cluster.Generation))
+		r.setSyncedCondition(ctx, cluster, CheckApplyDesireStatuses(ctx, r.Dynamo, statusPrefix, deleteEntries, cluster.Generation))
 		return result, nil
-	}
-
-	// Clean up DeleteDesire specs from DynamoDB.
-	for _, e := range deleteEntries {
-		if err := r.Dynamo.DeleteDesireSpec(ctx, specsPrefix, "-deletedesires", e.DocID); err != nil {
-			log.Error(err, "failed to clean up DeleteDesire spec", "resource", e.Resource, "name", e.Name)
-		}
 	}
 
 	// Clean up the HostedCluster ReadDesire spec from DynamoDB.
@@ -345,22 +335,23 @@ func (r *ClusterReconciler) reconcileDelete(ctx context.Context, cluster *hyperf
 	return r.cleanupAndRemoveFinalizer(ctx, cluster)
 }
 
-// writeAndWaitDeleteDesire writes a DeleteDesire and checks for confirmation.
+// writeAndWaitApplyDesireDelete writes an ApplyDesire with Type=Delete and checks for confirmation.
 // Returns a non-zero result (with RequeueAfter) if still waiting.
-func (r *ClusterReconciler) writeAndWaitDeleteDesire(ctx context.Context, specsPrefix, statusPrefix, mc, clusterID string, target dynamo.ResourceReference) (ctrl.Result, error) {
+func (r *ClusterReconciler) writeAndWaitApplyDesireDelete(ctx context.Context, specsPrefix, statusPrefix, mc, clusterID string, target dynamo.ResourceReference) (ctrl.Result, error) {
 	docID := dynamo.NewDocumentID(taskKey+"-delete", target.Group, target.Version, target.Resource, target.Namespace, target.Name)
-	desire := &dynamo.DeleteDesire{
+	desire := &dynamo.ApplyDesire{
 		DynamoDBMetadata: dynamo.DynamoDBMetadata{DocumentID: docID},
-		Spec: dynamo.DeleteDesireSpec{
+		Spec: dynamo.ApplyDesireSpec{
+			Type:              dynamo.ApplyDesireTypeDelete,
 			ManagementCluster: mc,
 			ClusterID:         clusterID,
 			TargetItem:        target,
 		},
 	}
-	if _, err := r.Dynamo.UpsertDeleteDesire(ctx, specsPrefix, desire); err != nil {
+	if _, err := r.Dynamo.UpsertApplyDesire(ctx, specsPrefix, desire); err != nil {
 		return ctrl.Result{}, err
 	}
-	status, err := r.Dynamo.GetDeleteDesireStatus(ctx, statusPrefix, docID)
+	status, err := r.Dynamo.GetApplyDesireStatus(ctx, statusPrefix, docID)
 	if err != nil || !meta.IsStatusConditionTrue(status.Conditions, dynamo.DesireConditionSuccessful) {
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}

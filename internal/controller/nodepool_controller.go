@@ -213,7 +213,7 @@ func (r *NodePoolReconciler) reconcileDelete(ctx context.Context, nodePool *hype
 		m := render.NodePoolResource(nodePool, cluster)
 		ns := m.Namespace
 
-		// Remove ApplyDesire spec before creating the DeleteDesire to prevent
+		// Remove ApplyDesire spec before creating the delete desire to prevent
 		// kube-applier from racing and re-applying the resource being deleted.
 		applyDocID := dynamo.NewDocumentID(taskKey, m.Group, m.Version, m.Resource, ns, m.Name)
 		if err := r.Dynamo.DeleteDesireSpec(ctx, specsPrefix, "-applydesires", applyDocID); err != nil {
@@ -222,9 +222,10 @@ func (r *NodePoolReconciler) reconcileDelete(ctx context.Context, nodePool *hype
 
 		docID := dynamo.NewDocumentID(taskKey+"-delete", m.Group, m.Version, m.Resource, ns, m.Name)
 
-		deleteDesire := &dynamo.DeleteDesire{
+		deleteDesire := &dynamo.ApplyDesire{
 			DynamoDBMetadata: dynamo.DynamoDBMetadata{DocumentID: docID},
-			Spec: dynamo.DeleteDesireSpec{
+			Spec: dynamo.ApplyDesireSpec{
+				Type:              dynamo.ApplyDesireTypeDelete,
 				ManagementCluster: mc,
 				ClusterID:         render.ClusterIDFromNamespace(cluster.Namespace),
 				TargetItem: dynamo.ResourceReference{
@@ -236,22 +237,17 @@ func (r *NodePoolReconciler) reconcileDelete(ctx context.Context, nodePool *hype
 				},
 			},
 		}
-		if _, err := r.Dynamo.UpsertDeleteDesire(ctx, specsPrefix, deleteDesire); err != nil {
+		if _, err := r.Dynamo.UpsertApplyDesire(ctx, specsPrefix, deleteDesire); err != nil {
 			return ctrl.Result{}, fmt.Errorf("upsert delete desire: %w", err)
 		}
 
 		deleteEntry := DesireStatusEntry{DocID: docID, Resource: m.Resource, Name: m.Name}
-		deleteSynced := CheckDeleteDesireStatuses(ctx, r.Dynamo, statusPrefix, []DesireStatusEntry{deleteEntry}, nodePool.Generation)
+		deleteSynced := CheckApplyDesireStatuses(ctx, r.Dynamo, statusPrefix, []DesireStatusEntry{deleteEntry}, nodePool.Generation)
 		r.setSyncedCondition(ctx, nodePool, deleteSynced)
 
 		if deleteSynced.Status != metav1.ConditionTrue {
-			log.Info("Waiting for DeleteDesire confirmation", "nodePool", nodePool.Name)
+			log.Info("Waiting for delete desire confirmation", "nodePool", nodePool.Name)
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
-		}
-
-		// Clean up DeleteDesire spec from DynamoDB.
-		if err := r.Dynamo.DeleteDesireSpec(ctx, specsPrefix, "-deletedesires", docID); err != nil {
-			log.Error(err, "failed to clean up DeleteDesire spec", "nodepool", m.Name)
 		}
 
 		// Clean up the NodePool ReadDesire spec from DynamoDB.

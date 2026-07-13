@@ -209,7 +209,7 @@ var _ = Describe("Manifest Controller", func() {
 			Expect(docIDB).To(Equal(expectedB))
 		})
 
-		It("should write DeleteDesires and requeue when waiting for confirmation", func() {
+		It("should write delete desires and requeue when waiting for confirmation", func() {
 			resource := newTestManifest(manifestName)
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 
@@ -228,25 +228,26 @@ var _ = Describe("Manifest Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &toDelete)).To(Succeed())
 			Expect(k8sClient.Delete(ctx, &toDelete)).To(Succeed())
 
-			// Deletion reconcile: cleans up ApplyDesires, writes DeleteDesires, no confirmation → requeues.
+			// Deletion reconcile: cleans up ApplyDesires, writes delete desires, no confirmation → requeues.
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Namespace: testNS, Name: manifestName},
 			})
 			Expect(err).NotTo(HaveOccurred())
-			// 4 ApplyDesire cleanups before DeleteDesires are written.
+			// 4 ApplyDesire cleanups before delete desires are written.
 			Expect(fd.deletedSpecs).To(HaveLen(4))
 			for _, spec := range fd.deletedSpecs {
 				Expect(spec).To(ContainSubstring("-applydesires/"))
 			}
-			Expect(fd.deleteCount).To(Equal(4)) // All DeleteDesires written before checking status.
-			Expect(fd.deletes[0].Spec.TargetItem.Resource).To(Equal("serviceaccounts"))
-			Expect(fd.deletes[1].Spec.TargetItem.Resource).To(Equal("roles"))
-			Expect(fd.deletes[2].Spec.TargetItem.Resource).To(Equal("rolebindings"))
-			Expect(fd.deletes[3].Spec.TargetItem.Resource).To(Equal("jobs"))
+			deleteApplies := filterDeleteDesires(fd.applies)
+			Expect(len(deleteApplies)).To(Equal(4)) // All delete desires written before checking status.
+			Expect(deleteApplies[0].Spec.TargetItem.Resource).To(Equal("serviceaccounts"))
+			Expect(deleteApplies[1].Spec.TargetItem.Resource).To(Equal("roles"))
+			Expect(deleteApplies[2].Spec.TargetItem.Resource).To(Equal("rolebindings"))
+			Expect(deleteApplies[3].Spec.TargetItem.Resource).To(Equal("jobs"))
 			Expect(result.RequeueAfter).NotTo(BeZero(), "should requeue while waiting for confirmation")
 		})
 
-		It("should remove finalizer after all DeleteDesire confirmations", func() {
+		It("should remove finalizer after all delete desire confirmations", func() {
 			resource := newTestManifest(manifestName)
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 
@@ -265,8 +266,8 @@ var _ = Describe("Manifest Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &toDelete)).To(Succeed())
 			Expect(k8sClient.Delete(ctx, &toDelete)).To(Succeed())
 
-			// Simulate all DeleteDesires confirmed (Successful=True).
-			fd.deleteStatus = &dynamo.DeleteDesireStatus{
+			// Simulate all delete desires confirmed (Successful=True).
+			fd.applyStatus = &dynamo.ApplyDesireStatus{
 				Conditions: []metav1.Condition{{
 					Type:   dynamo.DesireConditionSuccessful,
 					Status: metav1.ConditionTrue,
@@ -617,8 +618,8 @@ var _ = Describe("Manifest Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &toDelete)).To(Succeed())
 			Expect(k8sClient.Delete(ctx, &toDelete)).To(Succeed())
 
-			// Simulate all DeleteDesires confirmed (Successful=True) so finalizer is removed.
-			fd.deleteStatus = &dynamo.DeleteDesireStatus{
+			// Simulate all ApplyDesires (Type=Delete) confirmed (Successful=True) so finalizer is removed.
+			fd.applyStatus = &dynamo.ApplyDesireStatus{
 				Conditions: []metav1.Condition{{
 					Type:   dynamo.DesireConditionSuccessful,
 					Status: metav1.ConditionTrue,
