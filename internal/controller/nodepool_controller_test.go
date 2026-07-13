@@ -149,7 +149,7 @@ var _ = Describe("NodePool Controller", func() {
 			Expect(fd.applyCount).To(Equal(1))
 		})
 
-		It("should create DeleteDesire, wait for confirmation, and remove finalizer on deletion", func() {
+		It("should create delete desire, wait for confirmation, and remove finalizer on deletion", func() {
 			cluster := newTestCluster(clusterName)
 			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
 
@@ -179,17 +179,18 @@ var _ = Describe("NodePool Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: nodePoolName}, &toDelete)).To(Succeed())
 			Expect(k8sClient.Delete(ctx, &toDelete)).To(Succeed())
 
-			// First deletion reconcile: writes DeleteDesire but no confirmation → requeues.
+			// First deletion reconcile: writes delete desire but no confirmation → requeues.
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Namespace: testNS, Name: nodePoolName},
 			})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(fd.deleteCount).To(Equal(1))
-			Expect(fd.deletes[0].Spec.TargetItem.Resource).To(Equal("nodepools"))
+			deleteApplies := filterApplyDesireDeletes(fd.applies)
+			Expect(len(deleteApplies)).To(Equal(1))
+			Expect(deleteApplies[0].Spec.TargetItem.Resource).To(Equal("nodepools"))
 			Expect(result.RequeueAfter).NotTo(BeZero(), "should requeue while waiting for confirmation")
 
 			// Simulate kube-applier-aws confirming the deletion (Successful=True).
-			fd.deleteStatus = &dynamo.DeleteDesireStatus{
+			fd.applyStatus = &dynamo.ApplyDesireStatus{
 				Conditions: []metav1.Condition{{
 					Type:   dynamo.DesireConditionSuccessful,
 					Status: metav1.ConditionTrue,
@@ -303,7 +304,7 @@ var _ = Describe("NodePool Controller", func() {
 			Expect(k8sClient.Create(ctx, np)).To(Succeed())
 
 			fd := &fakeDynamo{
-				deleteStatus: &dynamo.DeleteDesireStatus{
+				applyStatus: &dynamo.ApplyDesireStatus{
 					Conditions: []metav1.Condition{{
 						Type:   dynamo.DesireConditionSuccessful,
 						Status: metav1.ConditionTrue,
@@ -327,7 +328,7 @@ var _ = Describe("NodePool Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: nodePoolName}, &toDelete)).To(Succeed())
 			Expect(k8sClient.Delete(ctx, &toDelete)).To(Succeed())
 
-			// Reconcile deletion: DeleteDesire confirmed immediately, should also clean up ReadDesire.
+			// Reconcile deletion: delete desire confirmed immediately, should also clean up ReadDesire.
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Namespace: testNS, Name: nodePoolName},
 			})

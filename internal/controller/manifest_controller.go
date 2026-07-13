@@ -284,7 +284,7 @@ func (r *ManifestReconciler) reconcileDelete(ctx context.Context, hfm *hyperflee
 			return ctrl.Result{}, fmt.Errorf("extract metadata from resource %s: %w", res.Resource, err)
 		}
 
-		// Remove ApplyDesire spec before creating the DeleteDesire to prevent
+		// Remove ApplyDesire spec before creating the delete desire to prevent
 		// kube-applier from racing and re-applying the resource being deleted.
 		applyDocID := dynamo.NewDocumentID(applyTaskKey, group, version, res.Resource, namespace, name)
 		if err := r.Dynamo.DeleteDesireSpec(ctx, specsPrefix, "-applydesires", applyDocID); err != nil {
@@ -292,9 +292,10 @@ func (r *ManifestReconciler) reconcileDelete(ctx context.Context, hfm *hyperflee
 		}
 
 		docID := dynamo.NewDocumentID(scopedTaskKey, group, version, res.Resource, namespace, name)
-		deleteDesire := &dynamo.DeleteDesire{
+		deleteDesire := &dynamo.ApplyDesire{
 			DynamoDBMetadata: dynamo.DynamoDBMetadata{DocumentID: docID},
-			Spec: dynamo.DeleteDesireSpec{
+			Spec: dynamo.ApplyDesireSpec{
+				Type:              dynamo.ApplyDesireTypeDelete,
 				ManagementCluster: mc,
 				ClusterID:         hfm.Name,
 				TargetItem: dynamo.ResourceReference{
@@ -306,7 +307,7 @@ func (r *ManifestReconciler) reconcileDelete(ctx context.Context, hfm *hyperflee
 				},
 			},
 		}
-		if _, err := r.Dynamo.UpsertDeleteDesire(ctx, specsPrefix, deleteDesire); err != nil {
+		if _, err := r.Dynamo.UpsertApplyDesire(ctx, specsPrefix, deleteDesire); err != nil {
 			return ctrl.Result{}, fmt.Errorf("upsert delete desire %s/%s: %w", res.Resource, name, err)
 		}
 		entries = append(entries, deleteEntry{resource: res.Resource, name: name, docID: docID})
@@ -319,10 +320,10 @@ func (r *ManifestReconciler) reconcileDelete(ctx context.Context, hfm *hyperflee
 	}
 
 	for _, e := range entries {
-		deleteStatus, err := r.Dynamo.GetDeleteDesireStatus(ctx, statusPrefix, e.docID)
+		deleteStatus, err := r.Dynamo.GetApplyDesireStatus(ctx, statusPrefix, e.docID)
 		if err != nil || !meta.IsStatusConditionTrue(deleteStatus.Conditions, dynamo.DesireConditionSuccessful) {
 			log.Info("Waiting for resource deletion to complete", "pendingResource", e.name)
-			r.setSyncedCondition(ctx, hfm, CheckDeleteDesireStatuses(ctx, r.Dynamo, statusPrefix, deleteStatusEntries, hfm.Generation))
+			r.setSyncedCondition(ctx, hfm, CheckApplyDesireStatuses(ctx, r.Dynamo, statusPrefix, deleteStatusEntries, hfm.Generation))
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
 	}

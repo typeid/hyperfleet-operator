@@ -182,7 +182,7 @@ var _ = Describe("Cluster Controller", func() {
 				NamespacedName: types.NamespacedName{Namespace: testNS, Name: clusterName},
 			})
 
-			// Set placementRef so the deletion path writes DeleteDesires.
+			// Set placementRef so the deletion path writes delete desires.
 			var updated hyperfleetv1alpha1.Cluster
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: clusterName}, &updated)).To(Succeed())
 			updated.Status.PlacementRef = &hyperfleetv1alpha1.PlacementReference{
@@ -194,56 +194,60 @@ var _ = Describe("Cluster Controller", func() {
 			// Delete the CR — sets DeletionTimestamp.
 			Expect(k8sClient.Delete(ctx, &updated)).To(Succeed())
 
-			// First deletion reconcile: cleans up ApplyDesires, writes HostedCluster
-			// DeleteDesire but no confirmation yet → requeues.
-			result, err := reconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Namespace: testNS, Name: clusterName},
-			})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(fd.deleteCount).To(Equal(1))
-			Expect(fd.deletes[0].Spec.TargetItem.Resource).To(Equal("hostedclusters"))
-			Expect(result.RequeueAfter).NotTo(BeZero(), "should requeue while waiting for HostedCluster deletion")
+		// First deletion reconcile: cleans up ApplyDesires, writes HostedCluster
+		// delete desire but no confirmation yet → requeues.
+		result, err := reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Namespace: testNS, Name: clusterName},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		// 7 apply desire cleanups + 1 HostedCluster delete desire written via UpsertApplyDesire.
+		deleteApplies := filterApplyDesireDeletes(fd.applies)
+		Expect(len(deleteApplies)).To(Equal(1))
+		Expect(deleteApplies[0].Spec.TargetItem.Resource).To(Equal("hostedclusters"))
+		Expect(result.RequeueAfter).NotTo(BeZero(), "should requeue while waiting for HostedCluster deletion")
 
-			// Placement should still exist (not reached yet).
-			var p hyperfleetv1alpha1.Placement
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: clusterName + "-placement"}, &p)).To(Succeed())
+		// Placement should still exist (not reached yet).
+		var p hyperfleetv1alpha1.Placement
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: clusterName + "-placement"}, &p)).To(Succeed())
 
-			// Simulate kube-applier-aws acknowledging the delete but resource
-			// still terminating (Successful=False, WaitingForDeletion).
-			fd.deleteStatus = &dynamo.DeleteDesireStatus{
-				Conditions: []metav1.Condition{{
-					Type:   dynamo.DesireConditionSuccessful,
-					Status: metav1.ConditionFalse,
-					Reason: "WaitingForDeletion",
-				}},
-			}
+		// Simulate kube-applier-aws acknowledging the delete but resource
+		// still terminating (Successful=False, WaitingForDeletion).
+		fd.applyStatus = &dynamo.ApplyDesireStatus{
+			Conditions: []metav1.Condition{{
+				Type:   dynamo.DesireConditionSuccessful,
+				Status: metav1.ConditionFalse,
+				Reason: "WaitingForDeletion",
+			}},
+		}
 
-			// Second deletion reconcile: status exists but Successful!=True → requeues.
-			result, err = reconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Namespace: testNS, Name: clusterName},
-			})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(fd.deleteCount).To(Equal(2)) // HC rewritten
-			Expect(result.RequeueAfter).NotTo(BeZero(), "should requeue while resource still terminating")
+		// Second deletion reconcile: status exists but Successful!=True → requeues.
+		result, err = reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Namespace: testNS, Name: clusterName},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		deleteApplies = filterApplyDesireDeletes(fd.applies)
+		Expect(len(deleteApplies)).To(Equal(2)) // HC rewritten
+		Expect(result.RequeueAfter).NotTo(BeZero(), "should requeue while resource still terminating")
 
-			// Simulate resource fully deleted (Successful=True, NoErrors).
-			fd.deleteStatus = &dynamo.DeleteDesireStatus{
-				Conditions: []metav1.Condition{{
-					Type:   dynamo.DesireConditionSuccessful,
-					Status: metav1.ConditionTrue,
-					Reason: "NoErrors",
-				}},
-			}
+		// Simulate resource fully deleted (Successful=True, NoErrors).
+		fd.applyStatus = &dynamo.ApplyDesireStatus{
+			Conditions: []metav1.Condition{{
+				Type:   dynamo.DesireConditionSuccessful,
+				Status: metav1.ConditionTrue,
+				Reason: "NoErrors",
+			}},
+		}
 
-			// Third deletion reconcile: HC confirmed gone → writes namespace
-			// DeleteDesire → namespace confirmed → deletes Placement, removes finalizer.
-			_, err = reconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Namespace: testNS, Name: clusterName},
-			})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(fd.deleteCount).To(Equal(4)) // HC (rewritten) + NS
-			Expect(fd.deletes[2].Spec.TargetItem.Resource).To(Equal("hostedclusters"))
-			Expect(fd.deletes[3].Spec.TargetItem.Resource).To(Equal("namespaces"))
+		// Third deletion reconcile: HC confirmed gone → writes namespace
+		// delete desire → namespace confirmed → deletes Placement, removes finalizer.
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Namespace: testNS, Name: clusterName},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		deleteApplies = filterApplyDesireDeletes(fd.applies)
+		Expect(len(deleteApplies)).To(Equal(4)) // HC (rewritten) + NS
+		Expect(deleteApplies[2].Spec.TargetItem.Resource).To(Equal("hostedclusters"))
+		Expect(deleteApplies[3].Spec.TargetItem.Resource).To(Equal("namespaces"))
 
 			// Verify the Placement was deleted.
 			err = k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: clusterName + "-placement"}, &p)
@@ -451,4 +455,15 @@ func newTestCluster(name string) *hyperfleetv1alpha1.Cluster {
 			},
 		},
 	}
+}
+
+// filterApplyDesireDeletes returns only ApplyDesires with Type=Delete from the slice.
+func filterApplyDesireDeletes(applies []*dynamo.ApplyDesire) []*dynamo.ApplyDesire {
+	var out []*dynamo.ApplyDesire
+	for _, a := range applies {
+		if a.Spec.Type == dynamo.ApplyDesireTypeDelete {
+			out = append(out, a)
+		}
+	}
+	return out
 }

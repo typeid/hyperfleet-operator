@@ -100,7 +100,7 @@ var _ = Describe("CheckApplyDesireStatuses", func() {
 	})
 })
 
-var _ = Describe("CheckDeleteDesireStatuses", func() {
+var _ = Describe("CheckApplyDesireStatuses (delete desires)", func() {
 	ctx := context.Background()
 
 	entries := func(docIDs ...string) []DesireStatusEntry {
@@ -111,68 +111,55 @@ var _ = Describe("CheckDeleteDesireStatuses", func() {
 		return out
 	}
 
-	It("should return AllSynced when all deletes report Successful=True", func() {
+	It("should return AllSynced when all delete desires report Successful=True", func() {
 		fd := &fakeDynamo{
-			deleteStatuses: map[string]*dynamo.DeleteDesireStatus{
-				"doc-a": {Conditions: []metav1.Condition{{Type: dynamo.DesireConditionSuccessful, Status: metav1.ConditionTrue, Reason: "NoErrors"}}},
-				"doc-b": {Conditions: []metav1.Condition{{Type: dynamo.DesireConditionSuccessful, Status: metav1.ConditionTrue, Reason: "NoErrors"}}},
+			applyStatuses: map[string]*dynamo.ApplyDesireStatus{
+				"doc-a": {Conditions: []metav1.Condition{{Type: dynamo.DesireConditionSuccessful, Status: metav1.ConditionTrue, Reason: "NoErrors"}}, ObservedDesireUpdateTime: time.Now()},
+				"doc-b": {Conditions: []metav1.Condition{{Type: dynamo.DesireConditionSuccessful, Status: metav1.ConditionTrue, Reason: "NoErrors"}}, ObservedDesireUpdateTime: time.Now()},
 			},
 		}
-		cond := CheckDeleteDesireStatuses(ctx, fd, "status-prefix", entries("doc-a", "doc-b"), 1)
+		cond := CheckApplyDesireStatuses(ctx, fd, "status-prefix", entries("doc-a", "doc-b"), 1)
 		Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 		Expect(cond.Reason).To(Equal("AllSynced"))
 		Expect(cond.Message).To(ContainSubstring("2/2"))
 	})
 
-	It("should return AwaitingDeletion when a delete reports Successful=False", func() {
+	It("should return AwaitingSync when a delete desire reports Successful=False", func() {
 		fd := &fakeDynamo{
-			deleteStatuses: map[string]*dynamo.DeleteDesireStatus{
-				"doc-a": {Conditions: []metav1.Condition{{Type: dynamo.DesireConditionSuccessful, Status: metav1.ConditionTrue, Reason: "NoErrors"}}},
-				"doc-b": {Conditions: []metav1.Condition{{Type: dynamo.DesireConditionSuccessful, Status: metav1.ConditionFalse, Reason: "WaitingForDeletion"}}},
+			applyStatuses: map[string]*dynamo.ApplyDesireStatus{
+				"doc-a": {Conditions: []metav1.Condition{{Type: dynamo.DesireConditionSuccessful, Status: metav1.ConditionTrue, Reason: "NoErrors"}}, ObservedDesireUpdateTime: time.Now()},
+				"doc-b": {Conditions: []metav1.Condition{{Type: dynamo.DesireConditionSuccessful, Status: metav1.ConditionFalse, Reason: "WaitingForDeletion"}}, ObservedDesireUpdateTime: time.Now()},
 			},
 		}
-		cond := CheckDeleteDesireStatuses(ctx, fd, "status-prefix", entries("doc-a", "doc-b"), 1)
+		cond := CheckApplyDesireStatuses(ctx, fd, "status-prefix", entries("doc-a", "doc-b"), 1)
 		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-		Expect(cond.Reason).To(Equal("AwaitingDeletion"))
+		Expect(cond.Reason).To(Equal("SyncFailed"))
 		Expect(cond.Message).To(ContainSubstring("WaitingForDeletion"))
 	})
 
-	It("should return StatusCheckFailed when DynamoDB returns a non-NotFound error", func() {
+	It("should return SyncFailed when DynamoDB returns a non-NotFound error", func() {
 		fd := &fakeDynamo{
-			deleteStatuses: map[string]*dynamo.DeleteDesireStatus{
-				"doc-a": {Conditions: []metav1.Condition{{Type: dynamo.DesireConditionSuccessful, Status: metav1.ConditionTrue, Reason: "NoErrors"}}},
+			applyStatuses: map[string]*dynamo.ApplyDesireStatus{
+				"doc-a": {Conditions: []metav1.Condition{{Type: dynamo.DesireConditionSuccessful, Status: metav1.ConditionTrue, Reason: "NoErrors"}}, ObservedDesireUpdateTime: time.Now()},
 			},
-			deleteStatusErrors: map[string]error{
+			applyStatusErrors: map[string]error{
 				"doc-b": fmt.Errorf("dynamodb throttle"),
 			},
 		}
-		cond := CheckDeleteDesireStatuses(ctx, fd, "status-prefix", entries("doc-a", "doc-b"), 1)
+		cond := CheckApplyDesireStatuses(ctx, fd, "status-prefix", entries("doc-a", "doc-b"), 1)
 		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-		Expect(cond.Reason).To(Equal("StatusCheckFailed"))
+		Expect(cond.Reason).To(Equal("SyncFailed"))
 		Expect(cond.Message).To(ContainSubstring("dynamodb throttle"))
 	})
 
-	It("should return AwaitingDeletion when status is not yet available (ErrNotFound)", func() {
+	It("should return AwaitingSync when status is not yet available (ErrNotFound)", func() {
 		fd := &fakeDynamo{
-			deleteStatuses: map[string]*dynamo.DeleteDesireStatus{
-				"doc-a": {Conditions: []metav1.Condition{{Type: dynamo.DesireConditionSuccessful, Status: metav1.ConditionTrue, Reason: "NoErrors"}}},
+			applyStatuses: map[string]*dynamo.ApplyDesireStatus{
+				"doc-a": {Conditions: []metav1.Condition{{Type: dynamo.DesireConditionSuccessful, Status: metav1.ConditionTrue, Reason: "NoErrors"}}, ObservedDesireUpdateTime: time.Now()},
 			},
 		}
-		cond := CheckDeleteDesireStatuses(ctx, fd, "status-prefix", entries("doc-a", "doc-b"), 1)
+		cond := CheckApplyDesireStatuses(ctx, fd, "status-prefix", entries("doc-a", "doc-b"), 1)
 		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-		Expect(cond.Reason).To(Equal("AwaitingDeletion"))
-	})
-
-	It("should prioritize errors over pending deletions", func() {
-		fd := &fakeDynamo{
-			deleteStatuses: map[string]*dynamo.DeleteDesireStatus{
-				"doc-b": {Conditions: []metav1.Condition{{Type: dynamo.DesireConditionSuccessful, Status: metav1.ConditionFalse, Reason: "WaitingForDeletion"}}},
-			},
-			deleteStatusErrors: map[string]error{
-				"doc-a": fmt.Errorf("dynamodb throttle"),
-			},
-		}
-		cond := CheckDeleteDesireStatuses(ctx, fd, "status-prefix", entries("doc-a", "doc-b"), 1)
-		Expect(cond.Reason).To(Equal("StatusCheckFailed"))
+		Expect(cond.Reason).To(Equal("AwaitingSync"))
 	})
 })

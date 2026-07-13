@@ -32,7 +32,15 @@ type DynamoDBMetadata struct {
 	CreateTime time.Time `json:"createTime,omitempty" dynamodbav:"createTime,omitempty"`
 }
 
-// ApplyDesire holds a single Kubernetes object to be server-side-applied.
+// ApplyDesireType indicates whether an ApplyDesire should apply or delete the target resource.
+type ApplyDesireType string
+
+const (
+	ApplyDesireTypeApply  ApplyDesireType = "apply"
+	ApplyDesireTypeDelete ApplyDesireType = "delete"
+)
+
+// ApplyDesire holds a single Kubernetes object to be server-side-applied or deleted.
 type ApplyDesire struct {
 	DynamoDBMetadata `json:"dynamodbMetadata" dynamodbav:",omitempty"`
 	Spec             ApplyDesireSpec   `json:"spec"   dynamodbav:"spec"`
@@ -40,6 +48,7 @@ type ApplyDesire struct {
 }
 
 type ApplyDesireSpec struct {
+	Type              ApplyDesireType   `json:"type,omitempty"          dynamodbav:"type,omitempty"`
 	ManagementCluster string            `json:"managementCluster"       dynamodbav:"managementCluster"`
 	ClusterID         string            `json:"clusterID"               dynamodbav:"clusterID"`
 	NodePoolName      string            `json:"nodePoolName,omitempty"  dynamodbav:"nodePoolName,omitempty"`
@@ -51,25 +60,6 @@ type ApplyDesireStatus struct {
 	Conditions                []metav1.Condition `json:"conditions,omitempty"                dynamodbav:"conditions,omitempty"`
 	ObservedDesireUpdateTime  time.Time          `json:"observedDesireUpdateTime,omitempty"   dynamodbav:"observedDesireUpdateTime,omitempty"`
 	AppliedResourceGeneration int64              `json:"appliedResourceGeneration,omitempty"  dynamodbav:"appliedResourceGeneration,omitempty"`
-}
-
-// DeleteDesire targets a single Kubernetes object for deletion.
-type DeleteDesire struct {
-	DynamoDBMetadata `json:"dynamodbMetadata" dynamodbav:",omitempty"`
-	Spec             DeleteDesireSpec   `json:"spec"   dynamodbav:"spec"`
-	Status           DeleteDesireStatus `json:"status" dynamodbav:"status"`
-}
-
-type DeleteDesireSpec struct {
-	ManagementCluster string            `json:"managementCluster"      dynamodbav:"managementCluster"`
-	ClusterID         string            `json:"clusterID"              dynamodbav:"clusterID"`
-	NodePoolName      string            `json:"nodePoolName,omitempty" dynamodbav:"nodePoolName,omitempty"`
-	TargetItem        ResourceReference `json:"targetItem,omitempty"   dynamodbav:"targetItem"`
-}
-
-type DeleteDesireStatus struct {
-	Conditions               []metav1.Condition `json:"conditions,omitempty"               dynamodbav:"conditions,omitempty"`
-	ObservedDesireUpdateTime time.Time          `json:"observedDesireUpdateTime,omitempty"  dynamodbav:"observedDesireUpdateTime,omitempty"`
 }
 
 // ReadDesire requests kube-applier to watch a resource and mirror it back into status.
