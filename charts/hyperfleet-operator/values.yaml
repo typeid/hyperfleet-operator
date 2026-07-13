@@ -28,5 +28,17 @@ resources:
     cpu: 100m
     memory: 128Mi
 
+compactor:
+  enabled: true
+  interval: 5m
+  retention: 24h
+  resources:
+    limits:
+      cpu: 100m
+      memory: 64Mi
+    requests:
+      cpu: 50m
+      memory: 32Mi
+
 nodeSelector: {}
 tolerations: []
