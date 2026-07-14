@@ -133,7 +133,18 @@ var _ = Describe("Cluster Controller", func() {
 			placement.Status.Phase = hyperfleetv1alpha1.PlacementPhaseBound
 			Expect(k8sClient.Status().Update(ctx, placement)).To(Succeed())
 
-			fd := &fakeDynamo{}
+			// Pre-seed a successful namespace status so the namespace-gate in
+			// the reconciler passes and all 7 ApplyDesires are written in one
+			// reconcile cycle.
+			fd := &fakeDynamo{
+				applyStatus: &dynamo.ApplyDesireStatus{
+					Conditions: []metav1.Condition{{
+						Type:   dynamo.DesireConditionSuccessful,
+						Status: metav1.ConditionTrue,
+						Reason: "NoErrors",
+					}},
+				},
+			}
 			reconciler := &ClusterReconciler{
 				Client:         k8sClient,
 				Scheme:         k8sClient.Scheme(),
@@ -145,7 +156,7 @@ var _ = Describe("Cluster Controller", func() {
 			_, _ = reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Namespace: testNS, Name: clusterName},
 			})
-			// Second reconcile: creates desires.
+			// Second reconcile: namespace gate passes → writes all 7 desires.
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Namespace: testNS, Name: clusterName},
 			})
