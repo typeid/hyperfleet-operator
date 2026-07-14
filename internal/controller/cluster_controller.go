@@ -248,10 +248,7 @@ func (r *ClusterReconciler) reconcileDelete(ctx context.Context, cluster *hyperf
 		return r.cleanupAndRemoveFinalizer(ctx, cluster)
 	}
 
-	// Step 1: Delete NodePools and HostedCluster simultaneously.
-	// The HostedCluster delete desire must be written before or alongside
-	// NodePool deletion so HyperShift sees the cluster is terminating and
-	// skips node drains, which otherwise stall on PDBs.
+	// Delete NodePool CRs so HyperShift tears down worker nodes.
 	var nodePools hyperfleetv1alpha1.NodePoolList
 	if err := r.List(ctx, &nodePools, client.InNamespace(cluster.Namespace)); err != nil {
 		return ctrl.Result{}, fmt.Errorf("list nodepools: %w", err)
@@ -272,93 +269,93 @@ func (r *ClusterReconciler) reconcileDelete(ctx context.Context, cluster *hyperf
 	statusPrefix := dynamo.StatusPrefix(mc)
 	ns := cluster.Namespace
 	hcName := cluster.Name
+	clusterID := render.ClusterIDFromNamespace(cluster.Namespace)
 
-	// Remove all ApplyDesire specs to prevent kube-applier from racing
-	// and re-applying resources that are being deleted.
+	// Render the 7 cluster resources.
 	resources, err := render.ClusterResources(cluster, r.RegionalConfig)
 	if err != nil {
-		log.Error(err, "failed to render cluster resources for cleanup")
-	} else {
-		for _, m := range resources {
-			applyDocID := dynamo.NewDocumentID(taskKey, m.Group, m.Version, m.Resource, m.Namespace, m.Name)
-			if err := r.Dynamo.DeleteDesireSpec(ctx, specsPrefix, "-applydesires", applyDocID); err != nil {
-				log.Error(err, "failed to clean up ApplyDesire spec", "resource", m.Name)
+		return ctrl.Result{}, fmt.Errorf("render cluster resources: %w", err)
+	}
+
+	// Switch all 7 ApplyDesires to Type=Delete in-place, using the same
+	// taskKey and documentID as the original SSA desires. kube-applier
+	// sees a MODIFY stream event per resource and deletes each one from
+	// the MC instead of re-applying it.
+	type upsertResult struct {
+		entry DesireStatusEntry
+		err   error
+	}
+	upsertResults := make([]upsertResult, len(resources))
+	var wg sync.WaitGroup
+	for i, m := range resources {
+		wg.Add(1)
+		go func(idx int, m render.Resource) {
+			defer wg.Done()
+			docID := dynamo.NewDocumentID(taskKey, m.Group, m.Version, m.Resource, m.Namespace, m.Name)
+			desire := &dynamo.ApplyDesire{
+				DynamoDBMetadata: dynamo.DynamoDBMetadata{DocumentID: docID},
+				Spec: dynamo.ApplyDesireSpec{
+					Type:              dynamo.ApplyDesireTypeDelete,
+					ManagementCluster: mc,
+					ClusterID:         clusterID,
+					TargetItem: dynamo.ResourceReference{
+						Group:     m.Group,
+						Version:   m.Version,
+						Resource:  m.Resource,
+						Namespace: m.Namespace,
+						Name:      m.Name,
+					},
+				},
 			}
+			res, upsertErr := r.Dynamo.UpsertApplyDesire(ctx, specsPrefix, desire)
+			upsertResults[idx] = upsertResult{
+				entry: DesireStatusEntry{
+					DocID:            docID,
+					Resource:         m.Resource,
+					Name:             m.Name,
+					DesireUpdateTime: res.UpdateTime,
+				},
+				err: upsertErr,
+			}
+		}(i, m)
+	}
+	wg.Wait()
+
+	var deleteEntries []DesireStatusEntry
+	for _, ur := range upsertResults {
+		if ur.err != nil {
+			return ctrl.Result{}, fmt.Errorf("upsert delete desire for %s: %w", ur.entry.Name, ur.err)
 		}
+		deleteEntries = append(deleteEntries, ur.entry)
 	}
 
-	// Build delete entries for Synced condition tracking.
-	hcRef := dynamo.ResourceReference{
-		Group: "hypershift.openshift.io", Version: "v1beta1",
-		Resource: "hostedclusters", Namespace: ns, Name: hcName,
-	}
-	nsRef := dynamo.ResourceReference{
-		Group: "", Version: "v1", Resource: "namespaces", Name: ns,
-	}
-	deleteEntries := []DesireStatusEntry{
-		{DocID: dynamo.NewDocumentID(taskKey+"-delete", hcRef.Group, hcRef.Version, hcRef.Resource, hcRef.Namespace, hcRef.Name), Resource: hcRef.Resource, Name: hcRef.Name},
-		{DocID: dynamo.NewDocumentID(taskKey+"-delete", nsRef.Group, nsRef.Version, nsRef.Resource, nsRef.Namespace, nsRef.Name), Resource: nsRef.Resource, Name: nsRef.Name},
-	}
-
-	// Write the HostedCluster delete desire and check its status.
-	hcResult, err := r.writeAndWaitApplyDesireDelete(ctx, specsPrefix, statusPrefix, mc, cluster.Name, hcRef)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("delete hostedcluster: %w", err)
-	}
-
-	if !hcResult.IsZero() {
-		log.Info("Waiting for HostedCluster deletion", "hostedCluster", hcName)
-		r.setSyncedCondition(ctx, cluster, CheckApplyDesireStatuses(ctx, r.Dynamo, statusPrefix, deleteEntries, cluster.Generation))
+	// Wait for all 7 resources to be confirmed deleted by kube-applier.
+	syncedCond := CheckApplyDesireStatuses(ctx, r.Dynamo, statusPrefix, deleteEntries, cluster.Generation)
+	r.setSyncedCondition(ctx, cluster, syncedCond)
+	if syncedCond.Status != metav1.ConditionTrue {
+		log.Info("Waiting for cluster resources to be deleted on management cluster")
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
-	// Step 2: Wait for NodePool CRs to be fully deleted.
+	// Wait for NodePool CRs to be fully removed.
 	if pendingNodePools > 0 {
 		log.Info("Waiting for NodePools to be deleted", "count", pendingNodePools)
-		r.setSyncedCondition(ctx, cluster, CheckApplyDesireStatuses(ctx, r.Dynamo, statusPrefix, deleteEntries, cluster.Generation))
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
-	// Step 3: Delete the cluster namespace to clean up all remaining resources.
-	if result, err := r.writeAndWaitApplyDesireDelete(ctx, specsPrefix, statusPrefix, mc, cluster.Name, nsRef); err != nil || !result.IsZero() {
-		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("delete namespace: %w", err)
-		}
-		log.Info("Waiting for namespace deletion", "namespace", ns)
-		r.setSyncedCondition(ctx, cluster, CheckApplyDesireStatuses(ctx, r.Dynamo, statusPrefix, deleteEntries, cluster.Generation))
-		return result, nil
-	}
-
-	// Clean up the HostedCluster ReadDesire spec from DynamoDB.
+	// All MC resources deleted — clean up desire specs from DynamoDB.
 	readDocID := dynamo.NewDocumentID(taskKey+"-read", "hypershift.openshift.io", "v1beta1", "hostedclusters", ns, hcName)
 	if err := r.Dynamo.DeleteDesireSpec(ctx, specsPrefix, "-readdesires", readDocID); err != nil {
 		log.Error(err, "failed to clean up ReadDesire spec", "hostedcluster", hcName)
 	}
+	for _, m := range resources {
+		docID := dynamo.NewDocumentID(taskKey, m.Group, m.Version, m.Resource, m.Namespace, m.Name)
+		if err := r.Dynamo.DeleteDesireSpec(ctx, specsPrefix, "-applydesires", docID); err != nil {
+			log.Error(err, "failed to clean up ApplyDesire spec", "resource", m.Name)
+		}
+	}
 
 	return r.cleanupAndRemoveFinalizer(ctx, cluster)
-}
-
-// writeAndWaitApplyDesireDelete writes an ApplyDesire with Type=Delete and checks for confirmation.
-// Returns a non-zero result (with RequeueAfter) if still waiting.
-func (r *ClusterReconciler) writeAndWaitApplyDesireDelete(ctx context.Context, specsPrefix, statusPrefix, mc, clusterID string, target dynamo.ResourceReference) (ctrl.Result, error) {
-	docID := dynamo.NewDocumentID(taskKey+"-delete", target.Group, target.Version, target.Resource, target.Namespace, target.Name)
-	desire := &dynamo.ApplyDesire{
-		DynamoDBMetadata: dynamo.DynamoDBMetadata{DocumentID: docID},
-		Spec: dynamo.ApplyDesireSpec{
-			Type:              dynamo.ApplyDesireTypeDelete,
-			ManagementCluster: mc,
-			ClusterID:         clusterID,
-			TargetItem:        target,
-		},
-	}
-	if _, err := r.Dynamo.UpsertApplyDesire(ctx, specsPrefix, desire); err != nil {
-		return ctrl.Result{}, err
-	}
-	status, err := r.Dynamo.GetApplyDesireStatus(ctx, statusPrefix, docID)
-	if err != nil || !meta.IsStatusConditionTrue(status.Conditions, dynamo.DesireConditionSuccessful) {
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
-	}
-	return ctrl.Result{}, nil
 }
 
 func (r *ClusterReconciler) cleanupAndRemoveFinalizer(ctx context.Context, cluster *hyperfleetv1alpha1.Cluster) (ctrl.Result, error) {
