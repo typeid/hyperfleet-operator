@@ -1,7 +1,7 @@
 package dynamo
 
 import (
-	"github.com/rrp-bot/kube-applier-aws/api/kubeapplier"
+	"github.com/rrp-bot/rosa-hyperfleet-kube-applier/api/kubeapplier"
 )
 
 // DesireConditionSuccessful is the condition type kube-applier-aws sets on
