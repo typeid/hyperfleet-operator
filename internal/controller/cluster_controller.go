@@ -127,87 +127,54 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	hcNs := cluster.Namespace
 	readDocID := dynamo.NewDocumentID(taskKey+"-read", "hypershift.openshift.io", "v1beta1", "hostedclusters", hcNs, hcName)
 
-	// upsertResource writes a single resource as an ApplyDesire and returns its
-	// status entry. It is called sequentially for the namespace and in parallel
-	// for the remaining resources.
-	upsertResource := func(m render.Resource) (DesireStatusEntry, error) {
-		docID := dynamo.NewDocumentID(taskKey, m.Group, m.Version, m.Resource, m.Namespace, m.Name)
-		content, marshalErr := json.Marshal(m.Object)
-		if marshalErr != nil {
-			return DesireStatusEntry{}, fmt.Errorf("marshal resource %s: %w", m.Name, marshalErr)
-		}
-		desire := &dynamo.ApplyDesire{
-			DynamoDBMetadata: dynamo.DynamoDBMetadata{DocumentID: docID},
-			Spec: dynamo.ApplyDesireSpec{
-				Type:              dynamo.ApplyDesireTypeServerSideApply,
-				ManagementCluster: mc,
-				ClusterID:         clusterID,
-				TargetItem: dynamo.ResourceReference{
-					Group:     m.Group,
-					Version:   m.Version,
-					Resource:  m.Resource,
-					Namespace: m.Namespace,
-					Name:      m.Name,
-				},
-				ServerSideApply: &dynamo.ServerSideApplyConfig{
-					KubeContent: &runtime.RawExtension{Raw: content},
-				},
-			},
-		}
-		res, upsertErr := r.Dynamo.UpsertApplyDesire(ctx, specsPrefix, desire)
-		if upsertErr != nil {
-			return DesireStatusEntry{}, fmt.Errorf("upsert apply desire %s: %w", m.Name, upsertErr)
-		}
-		if r.EventRouter != nil {
-			r.EventRouter.Register(docID, EventTarget{Channel: r.StatusEvents, Key: req.NamespacedName})
-		}
-		return DesireStatusEntry{DocID: docID, Resource: m.Resource, Name: m.Name, DesireUpdateTime: res.UpdateTime}, nil
-	}
-
-	// Phase 1: write the namespace desire first (resources[0]) and wait for
-	// kube-applier to confirm it Successful before writing namespace-scoped
-	// resources. This prevents "namespace not found" errors on the first apply.
-	nsEntry, nsErr := upsertResource(resources[0])
-	if nsErr != nil {
-		return ctrl.Result{}, nsErr
-	}
-	nsStatus, nsStatusErr := r.Dynamo.GetApplyDesireStatus(ctx, statusPrefix, nsEntry.DocID)
-	namespaceReady := nsStatusErr == nil &&
-		!nsEntry.DesireUpdateTime.IsZero() &&
-		!nsStatus.ObservedDesireUpdateTime.Before(nsEntry.DesireUpdateTime) &&
-		meta.IsStatusConditionTrue(nsStatus.Conditions, dynamo.DesireConditionSuccessful)
-
-	// Phase 2: write remaining desires in parallel — but only once the namespace
-	// exists on the MC. Until then requeue so we don't flood kube-applier with
-	// desires that will fail with "namespace not found".
-	var applyEntries []DesireStatusEntry
-	applyEntries = append(applyEntries, nsEntry)
-
-	if !namespaceReady {
-		// Namespace not yet confirmed; update status to show we are waiting and
-		// come back on the next status-refresh cycle.
-		r.updateStatusFromDynamo(ctx, &cluster, statusPrefix, readDocID, applyEntries)
-		return ctrl.Result{RequeueAfter: statusRefreshDelay}, nil
-	}
-
-	// Phase 2: namespace is ready — upsert the remaining resources in parallel.
+	// Upsert ApplyDesires in parallel — no-op when content matches.
 	type upsertResult struct {
 		entry DesireStatusEntry
 		err   error
 	}
-	remaining := resources[1:]
-	upsertResults := make([]upsertResult, len(remaining))
+	upsertResults := make([]upsertResult, len(resources))
 	var upsertWg sync.WaitGroup
-	for i, m := range remaining {
+	for i, m := range resources {
 		upsertWg.Add(1)
 		go func(idx int, m render.Resource) {
 			defer upsertWg.Done()
-			entry, err := upsertResource(m)
-			upsertResults[idx] = upsertResult{entry: entry, err: err}
+			docID := dynamo.NewDocumentID(taskKey, m.Group, m.Version, m.Resource, m.Namespace, m.Name)
+			content, marshalErr := json.Marshal(m.Object)
+			if marshalErr != nil {
+				upsertResults[idx] = upsertResult{err: fmt.Errorf("marshal resource %s: %w", m.Name, marshalErr)}
+				return
+			}
+			desire := &dynamo.ApplyDesire{
+				DynamoDBMetadata: dynamo.DynamoDBMetadata{DocumentID: docID},
+				Spec: dynamo.ApplyDesireSpec{
+					Type:              dynamo.ApplyDesireTypeServerSideApply,
+					ManagementCluster: mc,
+					ClusterID:         clusterID,
+					TargetItem: dynamo.ResourceReference{
+						Group:     m.Group,
+						Version:   m.Version,
+						Resource:  m.Resource,
+						Namespace: m.Namespace,
+						Name:      m.Name,
+					},
+					ServerSideApply: &dynamo.ServerSideApplyConfig{
+						KubeContent: &runtime.RawExtension{Raw: content},
+					},
+				},
+			}
+			res, upsertErr := r.Dynamo.UpsertApplyDesire(ctx, specsPrefix, desire)
+			if upsertErr != nil {
+				upsertResults[idx] = upsertResult{err: fmt.Errorf("upsert apply desire %s: %w", m.Name, upsertErr)}
+				return
+			}
+			upsertResults[idx] = upsertResult{entry: DesireStatusEntry{DocID: docID, Resource: m.Resource, Name: m.Name, DesireUpdateTime: res.UpdateTime}}
+			if r.EventRouter != nil {
+				r.EventRouter.Register(docID, EventTarget{Channel: r.StatusEvents, Key: req.NamespacedName})
+			}
 		}(i, m)
 	}
 
-	// Upsert ReadDesire concurrently with the remaining ApplyDesires.
+	// Upsert ReadDesire concurrently with ApplyDesires.
 	var readErr error
 	upsertWg.Add(1)
 	go func() {
@@ -239,6 +206,7 @@ func (r *ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if readErr != nil {
 		return ctrl.Result{}, readErr
 	}
+	var applyEntries []DesireStatusEntry
 	for _, ur := range upsertResults {
 		if ur.err != nil {
 			return ctrl.Result{}, ur.err
