@@ -272,14 +272,18 @@ func (r *ManifestReconciler) reconcileDelete(ctx context.Context, hfm *hyperflee
 	mc := hfm.Spec.ManagementCluster
 	specsPrefix := dynamo.SpecsPrefix(mc)
 	statusPrefix := dynamo.StatusPrefix(mc)
-	applyTaskKey := manifestScopedTaskKey(hfm)
-	scopedTaskKey := applyTaskKey + "-delete"
+	taskKey := manifestScopedTaskKey(hfm)
 
-	type deleteEntry struct {
+	// Switch all ApplyDesires to Type=Delete in-place, using the same
+	// documentID as the original SSA desires. kube-applier sees a MODIFY
+	// stream event per resource and deletes each one from the MC instead of
+	// re-applying it.
+	type desireEntry struct {
 		resource, name string
 		docID          string
+		updateTime     time.Time
 	}
-	var entries []deleteEntry
+	var entries []desireEntry
 
 	for _, res := range hfm.Spec.Resources {
 		group, version, name, namespace, err := extractResourceMeta(res.Content.Raw)
@@ -287,14 +291,7 @@ func (r *ManifestReconciler) reconcileDelete(ctx context.Context, hfm *hyperflee
 			return ctrl.Result{}, fmt.Errorf("extract metadata from resource %s: %w", res.Resource, err)
 		}
 
-		// Remove ApplyDesire spec before creating the delete desire to prevent
-		// kube-applier from racing and re-applying the resource being deleted.
-		applyDocID := dynamo.NewDocumentID(applyTaskKey, group, version, res.Resource, namespace, name)
-		if err := r.Dynamo.DeleteDesireSpec(ctx, specsPrefix, "-applydesires", applyDocID); err != nil {
-			log.Error(err, "failed to clean up ApplyDesire spec", "resource", res.Resource, "name", name)
-		}
-
-		docID := dynamo.NewDocumentID(scopedTaskKey, group, version, res.Resource, namespace, name)
+		docID := dynamo.NewDocumentID(taskKey, group, version, res.Resource, namespace, name)
 		deleteDesire := &dynamo.ApplyDesire{
 			DynamoDBMetadata: dynamo.DynamoDBMetadata{DocumentID: docID},
 			Spec: dynamo.ApplyDesireSpec{
@@ -310,36 +307,48 @@ func (r *ManifestReconciler) reconcileDelete(ctx context.Context, hfm *hyperflee
 				},
 			},
 		}
-		if _, err := r.Dynamo.UpsertApplyDesire(ctx, specsPrefix, deleteDesire); err != nil {
-			return ctrl.Result{}, fmt.Errorf("upsert delete desire %s/%s: %w", res.Resource, name, err)
+		ur, upsertErr := r.Dynamo.UpsertApplyDesire(ctx, specsPrefix, deleteDesire)
+		if upsertErr != nil {
+			return ctrl.Result{}, fmt.Errorf("upsert delete desire %s/%s: %w", res.Resource, name, upsertErr)
 		}
-		entries = append(entries, deleteEntry{resource: res.Resource, name: name, docID: docID})
+		entries = append(entries, desireEntry{resource: res.Resource, name: name, docID: docID, updateTime: ur.UpdateTime})
 	}
 
-	// Build DesireStatusEntry list for Synced condition tracking.
-	var deleteStatusEntries []DesireStatusEntry
+	// Wait for all resources to be confirmed deleted by kube-applier
+	// (Successful=True on each desire's status).
+	var statusEntries []DesireStatusEntry
 	for _, e := range entries {
-		deleteStatusEntries = append(deleteStatusEntries, DesireStatusEntry{DocID: e.docID, Resource: e.resource, Name: e.name})
+		statusEntries = append(statusEntries, DesireStatusEntry{
+			DocID:            e.docID,
+			Resource:         e.resource,
+			Name:             e.name,
+			DesireUpdateTime: e.updateTime,
+		})
+	}
+	syncedCond := CheckApplyDesireStatuses(ctx, r.Dynamo, statusPrefix, statusEntries, hfm.Generation)
+	r.setSyncedCondition(ctx, hfm, syncedCond)
+	if syncedCond.Status != metav1.ConditionTrue {
+		log.Info("Waiting for manifest resources to be deleted on management cluster")
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
+	// All resources confirmed deleted — remove the ApplyDesire specs from
+	// DynamoDB so kube-applier stops tracking them.
 	for _, e := range entries {
-		deleteStatus, err := r.Dynamo.GetApplyDesireStatus(ctx, statusPrefix, e.docID)
-		if err != nil || !meta.IsStatusConditionTrue(deleteStatus.Conditions, dynamo.DesireConditionSuccessful) {
-			log.Info("Waiting for resource deletion to complete", "pendingResource", e.name)
-			r.setSyncedCondition(ctx, hfm, CheckApplyDesireStatuses(ctx, r.Dynamo, statusPrefix, deleteStatusEntries, hfm.Generation))
-			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		if err := r.Dynamo.DeleteDesireSpec(ctx, specsPrefix, "-applydesires", e.docID); err != nil {
+			log.Error(err, "Failed to clean up ApplyDesire spec", "resource", e.resource, "name", e.name)
 		}
 	}
 
-	// Clean up ReadDesire specs from DynamoDB for watched resources.
-	readTaskKey := manifestScopedTaskKey(hfm) + "-read"
+	// Clean up ReadDesire specs for watched resources.
+	readTaskKey := taskKey + "-read"
 	for _, res := range hfm.Spec.Resources {
 		if !res.Watch {
 			continue
 		}
 		group, version, name, namespace, err := extractResourceMeta(res.Content.Raw)
 		if err != nil {
-			log.Error(err, "failed to extract metadata for ReadDesire cleanup, skipping", "resource", res.Resource)
+			log.Error(err, "Failed to extract metadata for ReadDesire cleanup, skipping", "resource", res.Resource)
 			continue
 		}
 		readDocID := dynamo.NewDocumentID(readTaskKey, group, version, res.Resource, namespace, name)
@@ -347,7 +356,7 @@ func (r *ManifestReconciler) reconcileDelete(ctx context.Context, hfm *hyperflee
 			r.EventRouter.Deregister(readDocID)
 		}
 		if err := r.Dynamo.DeleteDesireSpec(ctx, specsPrefix, "-readdesires", readDocID); err != nil {
-			log.Error(err, "failed to clean up ReadDesire spec", "resource", res.Resource, "name", name)
+			log.Error(err, "Failed to clean up ReadDesire spec", "resource", res.Resource, "name", name)
 		}
 	}
 

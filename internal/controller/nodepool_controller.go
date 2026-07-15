@@ -216,15 +216,11 @@ func (r *NodePoolReconciler) reconcileDelete(ctx context.Context, nodePool *hype
 		m := render.NodePoolResource(nodePool, cluster)
 		ns := m.Namespace
 
-		// Remove ApplyDesire spec before creating the delete desire to prevent
-		// kube-applier from racing and re-applying the resource being deleted.
-		applyDocID := dynamo.NewDocumentID(taskKey, m.Group, m.Version, m.Resource, ns, m.Name)
-		if err := r.Dynamo.DeleteDesireSpec(ctx, specsPrefix, "-applydesires", applyDocID); err != nil {
-			log.Error(err, "failed to clean up ApplyDesire spec", "nodepool", m.Name)
-		}
-
-		docID := dynamo.NewDocumentID(taskKey+"-delete", m.Group, m.Version, m.Resource, ns, m.Name)
-
+		// Switch the ApplyDesire to Type=Delete in-place, using the same
+		// documentID as the original SSA desire. kube-applier sees a MODIFY
+		// stream event and deletes the resource from the MC instead of
+		// re-applying it.
+		docID := dynamo.NewDocumentID(taskKey, m.Group, m.Version, m.Resource, ns, m.Name)
 		deleteDesire := &dynamo.ApplyDesire{
 			DynamoDBMetadata: dynamo.DynamoDBMetadata{DocumentID: docID},
 			Spec: dynamo.ApplyDesireSpec{
@@ -240,23 +236,28 @@ func (r *NodePoolReconciler) reconcileDelete(ctx context.Context, nodePool *hype
 				},
 			},
 		}
-		if _, err := r.Dynamo.UpsertApplyDesire(ctx, specsPrefix, deleteDesire); err != nil {
+		ur, err := r.Dynamo.UpsertApplyDesire(ctx, specsPrefix, deleteDesire)
+		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("upsert delete desire: %w", err)
 		}
 
-		deleteEntry := DesireStatusEntry{DocID: docID, Resource: m.Resource, Name: m.Name}
+		deleteEntry := DesireStatusEntry{DocID: docID, Resource: m.Resource, Name: m.Name, DesireUpdateTime: ur.UpdateTime}
 		deleteSynced := CheckApplyDesireStatuses(ctx, r.Dynamo, statusPrefix, []DesireStatusEntry{deleteEntry}, nodePool.Generation)
 		r.setSyncedCondition(ctx, nodePool, deleteSynced)
 
 		if deleteSynced.Status != metav1.ConditionTrue {
-			log.Info("Waiting for delete desire confirmation", "nodePool", nodePool.Name)
+			log.Info("Waiting for NodePool to be deleted on management cluster", "nodePool", nodePool.Name)
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
 
-		// Clean up the NodePool ReadDesire spec from DynamoDB.
+		// Resource confirmed deleted — remove the ApplyDesire and ReadDesire
+		// specs from DynamoDB so kube-applier stops tracking them.
+		if err := r.Dynamo.DeleteDesireSpec(ctx, specsPrefix, "-applydesires", docID); err != nil {
+			log.Error(err, "Failed to clean up ApplyDesire spec", "nodepool", m.Name)
+		}
 		readDocID := dynamo.NewDocumentID(taskKey+"-read", m.Group, m.Version, m.Resource, ns, m.Name)
 		if err := r.Dynamo.DeleteDesireSpec(ctx, specsPrefix, "-readdesires", readDocID); err != nil {
-			log.Error(err, "failed to clean up ReadDesire spec", "nodepool", m.Name)
+			log.Error(err, "Failed to clean up ReadDesire spec", "nodepool", m.Name)
 		}
 	}
 

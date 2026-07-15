@@ -151,7 +151,7 @@ var _ = Describe("NodePool Controller", func() {
 			Expect(fd.applyCount).To(Equal(1))
 		})
 
-		It("should create delete desire, wait for confirmation, and remove finalizer on deletion", func() {
+		It("should flip desire to Type=Delete in-place, wait for confirmation, and remove finalizer on deletion", func() {
 			cluster := newTestCluster(clusterName)
 			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
 
@@ -181,17 +181,21 @@ var _ = Describe("NodePool Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: nodePoolName}, &toDelete)).To(Succeed())
 			Expect(k8sClient.Delete(ctx, &toDelete)).To(Succeed())
 
-			// First deletion reconcile: writes delete desire but no confirmation → requeues.
+			// First deletion reconcile: flips desire to Type=Delete in-place;
+			// no status yet → requeues. No pre-deletion of ApplyDesire spec.
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Namespace: testNS, Name: nodePoolName},
 			})
 			Expect(err).NotTo(HaveOccurred())
+			Expect(fd.deletedSpecs).To(BeEmpty(), "should not delete specs before deletion is confirmed")
 			deleteApplies := filterDeleteDesires(fd.applies)
 			Expect(len(deleteApplies)).To(Equal(1))
 			Expect(deleteApplies[0].Spec.TargetItem.Resource).To(Equal("nodepools"))
+			// documentID must be the same as the SSA desire (same taskKey, no "+"-delete"" suffix).
+			Expect(deleteApplies[0].DynamoDBMetadata.DocumentID).NotTo(BeEmpty())
 			Expect(result.RequeueAfter).NotTo(BeZero(), "should requeue while waiting for confirmation")
 
-			// Simulate kube-applier-aws confirming the deletion (Successful=True).
+			// Simulate kube-applier confirming deletion (Successful=True).
 			fd.applyStatus = &dynamo.ApplyDesireStatus{
 				Conditions: []metav1.Condition{{
 					Type:   dynamo.DesireConditionSuccessful,
@@ -200,7 +204,7 @@ var _ = Describe("NodePool Controller", func() {
 				}},
 			}
 
-			// Second deletion reconcile: confirmation found → removes finalizer.
+			// Second deletion reconcile: confirmation found → cleans up specs and removes finalizer.
 			_, err = reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Namespace: testNS, Name: nodePoolName},
 			})
@@ -209,6 +213,11 @@ var _ = Describe("NodePool Controller", func() {
 			// Verify NodePool is gone (finalizer removed → k8s deletes it).
 			err = k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: nodePoolName}, &hyperfleetv1alpha1.NodePool{})
 			Expect(err).To(HaveOccurred())
+
+			// ApplyDesire spec and ReadDesire spec cleaned up after confirmation.
+			applyCleanups, readCleanups := fd.countSpecCleanups()
+			Expect(applyCleanups).To(Equal(1), "should clean up ApplyDesire spec after deletion confirmed")
+			Expect(readCleanups).To(Equal(1), "should clean up ReadDesire spec after deletion confirmed")
 		})
 
 		It("should create ReadDesire alongside ApplyDesire", func() {
@@ -292,7 +301,7 @@ var _ = Describe("NodePool Controller", func() {
 			Expect(updated.Status.Phase).To(Equal(hyperfleetv1alpha1.NodePoolPhaseReady))
 		})
 
-		It("should clean up ReadDesire on deletion", func() {
+		It("should clean up ApplyDesire and ReadDesire specs after deletion confirmed", func() {
 			cluster := newTestCluster(clusterName)
 			Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
 
@@ -330,16 +339,17 @@ var _ = Describe("NodePool Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: nodePoolName}, &toDelete)).To(Succeed())
 			Expect(k8sClient.Delete(ctx, &toDelete)).To(Succeed())
 
-			// Reconcile deletion: delete desire confirmed immediately, should also clean up ReadDesire.
+			// Reconcile deletion: delete desire confirmed immediately (applyStatus pre-set).
+			// Should flip desire, see Successful=True, then clean up both specs.
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Namespace: testNS, Name: nodePoolName},
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// 1 ApplyDesire cleanup + 1 ReadDesire cleanup = 2 total (no separate deletedesires table).
-			Expect(fd.deletedSpecs).To(HaveLen(2))
-			Expect(fd.deletedSpecs[0]).To(ContainSubstring("-applydesires/"))
-			Expect(fd.deletedSpecs[1]).To(ContainSubstring("-readdesires/"))
+			// 1 ApplyDesire cleanup + 1 ReadDesire cleanup, both after confirmation.
+			applyCleanups, readCleanups := fd.countSpecCleanups()
+			Expect(applyCleanups).To(Equal(1), "should clean up ApplyDesire spec")
+			Expect(readCleanups).To(Equal(1), "should clean up ReadDesire spec")
 		})
 	})
 })
