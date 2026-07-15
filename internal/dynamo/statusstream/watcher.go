@@ -111,8 +111,8 @@ func (w *Watcher) Run(ctx context.Context) {
 // discoverShards enumerates all shards via DescribeStream and adopts
 // new ones into the tracked set.
 //
-// On initial discovery, only open shards are adopted (with LATEST)
-// to avoid replaying history on startup.
+// On initial discovery, only open shards are adopted (with TRIM_HORIZON)
+// to replay events written before the watcher attached.
 //
 // On subsequent discoveries, only children of tracked parents are
 // adopted (with TRIM_HORIZON) so the watcher picks up exactly the
@@ -164,7 +164,7 @@ func (w *Watcher) discoverShardsFrom(allShards []streamtypes.Shard, isInitial bo
 			}
 			w.shards[sid] = &shardState{
 				shardID:      sid,
-				iteratorType: streamtypes.ShardIteratorTypeLatest,
+				iteratorType: streamtypes.ShardIteratorTypeTrimHorizon,
 			}
 			w.logger.Info("initial shard adopted", "shardID", sid)
 			continue
@@ -186,7 +186,7 @@ func (w *Watcher) discoverShardsFrom(allShards []streamtypes.Shard, isInitial bo
 		} else if !isClosed {
 			w.shards[sid] = &shardState{
 				shardID:      sid,
-				iteratorType: streamtypes.ShardIteratorTypeLatest,
+				iteratorType: streamtypes.ShardIteratorTypeTrimHorizon,
 			}
 			w.logger.Info("orphan open shard adopted", "shardID", sid)
 		}

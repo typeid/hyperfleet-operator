@@ -107,8 +107,8 @@ func TestDiscoverShards_Initial(t *testing.T) {
 			t.Errorf("expected shard %s to be tracked", id)
 			continue
 		}
-		if s.iteratorType != streamtypes.ShardIteratorTypeLatest {
-			t.Errorf("shard %s: expected LATEST, got %s", id, s.iteratorType)
+		if s.iteratorType != streamtypes.ShardIteratorTypeTrimHorizon {
+			t.Errorf("shard %s: expected TRIM_HORIZON, got %s", id, s.iteratorType)
 		}
 	}
 	for _, id := range []string{"closed-1", "closed-2"} {
@@ -197,8 +197,8 @@ func TestDiscoverShards_OrphanOpenShard(t *testing.T) {
 	if !ok {
 		t.Fatal("expected orphan open shard to be adopted")
 	}
-	if s.iteratorType != streamtypes.ShardIteratorTypeLatest {
-		t.Errorf("orphan open shard should use LATEST, got %s", s.iteratorType)
+	if s.iteratorType != streamtypes.ShardIteratorTypeTrimHorizon {
+		t.Errorf("orphan open shard should use TRIM_HORIZON, got %s", s.iteratorType)
 	}
 }
 
