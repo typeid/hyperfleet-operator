@@ -2,6 +2,7 @@ package statusstream
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -12,22 +13,41 @@ import (
 )
 
 const (
-	streamPollInterval = 2 * time.Second
-	batchPause         = 200 * time.Millisecond
+	pollInterval     = 1 * time.Second
+	discoverInterval = 30 * time.Second
+	streamRetryDelay = 5 * time.Second
 )
 
 // OnChange is called when a status item is inserted or modified.
 // documentID is the partition key of the changed item.
 type OnChange func(documentID string)
 
-// Watcher tails a DynamoDB Stream on a single status-readdesires table,
+// shardState tracks the reading state of a single stream shard.
+type shardState struct {
+	shardID       string
+	parentShardID string
+	iterator      string
+	iteratorType  streamtypes.ShardIteratorType
+	lastSeqNum    string
+	closed        bool
+}
+
+// Watcher tails a DynamoDB Stream on a single status table,
 // calling onChange for every INSERT or MODIFY event.
+//
+// It tracks shards by ID rather than opaque iterator strings,
+// so it can detect shard rotation (parent closes, child created)
+// and immediately adopt the child without waiting for all shards
+// to close.
 type Watcher struct {
 	dbClient      *dynamodb.Client
 	streamsClient *dynamodbstreams.Client
 	tableName     string
 	onChange      OnChange
 	logger        *slog.Logger
+
+	streamARN string
+	shards    map[string]*shardState
 }
 
 func NewWatcher(
@@ -41,8 +61,9 @@ func NewWatcher(
 		dbClient:      dbClient,
 		streamsClient: streamsClient,
 		tableName:     tableName,
-		onChange:      onChange,
+		onChange:       onChange,
 		logger:        logger.With("table", tableName),
+		shards:        make(map[string]*shardState),
 	}
 }
 
@@ -52,87 +73,253 @@ func (w *Watcher) Run(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		w.watchStream(ctx)
+		arn, err := w.getStreamARN(ctx)
+		if err != nil || arn == "" {
+			w.logger.Warn("failed to get stream ARN, retrying", "error", err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(streamRetryDelay):
+				continue
+			}
+		}
+		w.streamARN = arn
+		break
+	}
+
+	w.discoverShards(ctx, true)
+
+	discoverTicker := time.NewTicker(discoverInterval)
+	defer discoverTicker.Stop()
+	pollTicker := time.NewTicker(pollInterval)
+	defer pollTicker.Stop()
+
+	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(streamPollInterval):
+		case <-discoverTicker.C:
+			w.discoverShards(ctx, false)
+		case <-pollTicker.C:
+			if w.pollAllShards(ctx) {
+				w.discoverShards(ctx, false)
+			}
 		}
 	}
 }
 
-func (w *Watcher) watchStream(ctx context.Context) {
-	streamARN, err := w.getStreamARN(ctx)
+// discoverShards enumerates all shards via DescribeStream and adopts
+// new ones into the tracked set.
+//
+// On initial discovery, only open shards are adopted (with TRIM_HORIZON)
+// to replay events written before the watcher attached.
+//
+// On subsequent discoveries, only children of tracked parents are
+// adopted (with TRIM_HORIZON) so the watcher picks up exactly the
+// records written after the parent closed.
+func (w *Watcher) discoverShards(ctx context.Context, isInitial bool) {
+	allShards, err := w.listAllShards(ctx)
 	if err != nil {
-		w.logger.Warn("failed to get stream ARN", "error", err)
-		return
-	}
-	if streamARN == "" {
-		w.logger.Warn("streams not enabled on table")
-		return
-	}
-
-	shardIters, err := w.getShardIterators(ctx, streamARN)
-	if err != nil {
-		w.logger.Warn("failed to get shard iterators", "error", err)
-		return
-	}
-
-	for {
-		if ctx.Err() != nil {
-			return
+		if isResourceNotFoundError(err) {
+			w.refreshStreamARN(ctx)
+		} else {
+			w.logger.Warn("failed to list shards", "error", err)
 		}
-		if len(shardIters) == 0 {
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(streamPollInterval):
+		return
+	}
+	w.discoverShardsFrom(allShards, isInitial)
+}
+
+func (w *Watcher) refreshStreamARN(ctx context.Context) {
+	arn, err := w.getStreamARN(ctx)
+	if err != nil || arn == "" {
+		w.logger.Warn("failed to refresh stream ARN", "error", err)
+		return
+	}
+	if arn != w.streamARN {
+		w.logger.Info("stream ARN changed, resetting shard state", "old", w.streamARN, "new", arn)
+		w.streamARN = arn
+		w.shards = make(map[string]*shardState)
+	}
+}
+
+// discoverShardsFrom processes a list of shards and adopts new ones.
+// Separated from discoverShards for testability.
+func (w *Watcher) discoverShardsFrom(allShards []streamtypes.Shard, isInitial bool) {
+	for _, shard := range allShards {
+		if shard.ShardId == nil {
+			continue
+		}
+		sid := *shard.ShardId
+		if _, tracked := w.shards[sid]; tracked {
+			continue
+		}
+
+		isClosed := shard.SequenceNumberRange != nil &&
+			shard.SequenceNumberRange.EndingSequenceNumber != nil
+
+		if isInitial {
+			if isClosed {
+				continue
 			}
-			shardIters, err = w.getShardIterators(ctx, streamARN)
+			w.shards[sid] = &shardState{
+				shardID:      sid,
+				iteratorType: streamtypes.ShardIteratorTypeTrimHorizon,
+			}
+			w.logger.Info("initial shard adopted", "shardID", sid)
+			continue
+		}
+
+		parentID := ""
+		if shard.ParentShardId != nil {
+			parentID = *shard.ParentShardId
+		}
+		if parentID != "" {
+			if _, parentTracked := w.shards[parentID]; parentTracked {
+				w.shards[sid] = &shardState{
+					shardID:       sid,
+					parentShardID: parentID,
+					iteratorType:  streamtypes.ShardIteratorTypeTrimHorizon,
+				}
+				w.logger.Info("child shard adopted", "shardID", sid, "parentShardID", parentID)
+			}
+		} else if !isClosed {
+			w.shards[sid] = &shardState{
+				shardID:      sid,
+				iteratorType: streamtypes.ShardIteratorTypeTrimHorizon,
+			}
+			w.logger.Info("orphan open shard adopted", "shardID", sid)
+		}
+	}
+
+	w.pruneClosedShards()
+}
+
+// pruneClosedShards removes closed shards from the tracked set once
+// their children have been adopted.
+func (w *Watcher) pruneClosedShards() {
+	parentsWithChildren := make(map[string]struct{})
+	for _, s := range w.shards {
+		if s.parentShardID != "" {
+			parentsWithChildren[s.parentShardID] = struct{}{}
+		}
+	}
+	for sid, s := range w.shards {
+		if s.closed {
+			if _, hasChild := parentsWithChildren[sid]; hasChild {
+				delete(w.shards, sid)
+			}
+		}
+	}
+}
+
+// pollAllShards reads records from every non-closed shard.
+// Returns true if any shard closed during this poll cycle.
+func (w *Watcher) pollAllShards(ctx context.Context) bool {
+	anyClosed := false
+	for _, shard := range w.shards {
+		if shard.closed {
+			continue
+		}
+		if ctx.Err() != nil {
+			return anyClosed
+		}
+
+		if shard.iterator == "" {
+			iter, err := w.getShardIterator(ctx, shard)
 			if err != nil {
-				w.logger.Warn("failed to re-discover shards", "error", err)
-				return
+				if isResourceNotFoundError(err) {
+					w.logger.Warn("shard not found, marking closed", "shardID", shard.shardID, "error", err)
+					shard.closed = true
+					anyClosed = true
+					continue
+				}
+				w.logger.Warn("failed to get shard iterator", "shardID", shard.shardID, "error", err)
+				continue
+			}
+			if iter == "" {
+				w.logger.Info("shard fully consumed, marking closed", "shardID", shard.shardID)
+				shard.closed = true
+				anyClosed = true
+				continue
+			}
+			shard.iterator = iter
+		}
+
+		records, nextIter, err := w.getRecords(ctx, shard.iterator)
+		if err != nil {
+			if ctx.Err() != nil {
+				return anyClosed
+			}
+			switch {
+			case isExpiredIteratorError(err):
+				w.logger.Info("iterator expired, refreshing", "shardID", shard.shardID)
+				shard.iterator = ""
+			case isResourceNotFoundError(err):
+				w.logger.Warn("shard resource not found, marking closed", "shardID", shard.shardID, "error", err)
+				shard.closed = true
+				shard.iterator = ""
+				anyClosed = true
+			case isTrimmedDataError(err):
+				w.logger.Warn("data trimmed past position, resetting to latest", "shardID", shard.shardID, "error", err)
+				shard.iterator = ""
+				shard.lastSeqNum = ""
+				shard.iteratorType = streamtypes.ShardIteratorTypeLatest
+			default:
+				w.logger.Warn("getRecords failed, clearing iterator for retry", "shardID", shard.shardID, "error", err)
+				shard.iterator = ""
 			}
 			continue
 		}
 
-		var nextIters []string
-		for _, iter := range shardIters {
-			records, nextIter, err := w.getRecords(ctx, iter)
-			if err != nil {
-				if ctx.Err() != nil {
-					return
-				}
+		for _, rec := range records {
+			if rec.Dynamodb == nil {
 				continue
 			}
-			for _, rec := range records {
-				if rec.Dynamodb == nil {
-					continue
-				}
-				if rec.EventName == streamtypes.OperationTypeRemove {
-					continue
-				}
-				docID := extractDocumentID(rec.Dynamodb.NewImage)
-				if docID != "" {
-					w.onChange(docID)
-				}
+			if rec.EventName == streamtypes.OperationTypeRemove {
+				continue
 			}
-			if nextIter != "" {
-				nextIters = append(nextIters, nextIter)
+			docID := extractDocumentID(rec.Dynamodb.NewImage)
+			if docID != "" {
+				w.onChange(docID)
+			}
+			if rec.Dynamodb.SequenceNumber != nil {
+				shard.lastSeqNum = *rec.Dynamodb.SequenceNumber
 			}
 		}
-		shardIters = nextIters
 
-		pause := streamPollInterval
-		if len(shardIters) > 0 {
-			pause = batchPause
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(pause):
+		if nextIter == "" {
+			shard.closed = true
+			shard.iterator = ""
+			w.logger.Info("shard closed", "shardID", shard.shardID)
+			anyClosed = true
+		} else {
+			shard.iterator = nextIter
 		}
 	}
+	return anyClosed
+}
+
+func (w *Watcher) getShardIterator(ctx context.Context, shard *shardState) (string, error) {
+	input := &dynamodbstreams.GetShardIteratorInput{
+		StreamArn: aws.String(w.streamARN),
+		ShardId:   aws.String(shard.shardID),
+	}
+	if shard.lastSeqNum != "" {
+		input.ShardIteratorType = streamtypes.ShardIteratorTypeAfterSequenceNumber
+		input.SequenceNumber = aws.String(shard.lastSeqNum)
+	} else {
+		input.ShardIteratorType = shard.iteratorType
+	}
+
+	out, err := w.streamsClient.GetShardIterator(ctx, input)
+	if err != nil {
+		return "", err
+	}
+	if out.ShardIterator == nil {
+		return "", nil
+	}
+	return *out.ShardIterator, nil
 }
 
 func (w *Watcher) getStreamARN(ctx context.Context) (string, error) {
@@ -148,39 +335,24 @@ func (w *Watcher) getStreamARN(ctx context.Context) (string, error) {
 	return *out.Table.LatestStreamArn, nil
 }
 
-func (w *Watcher) getShardIterators(ctx context.Context, streamARN string) ([]string, error) {
-	var iters []string
+func (w *Watcher) listAllShards(ctx context.Context) ([]streamtypes.Shard, error) {
+	var shards []streamtypes.Shard
 	var lastShardID *string
 	for {
 		out, err := w.streamsClient.DescribeStream(ctx, &dynamodbstreams.DescribeStreamInput{
-			StreamArn:             aws.String(streamARN),
+			StreamArn:             aws.String(w.streamARN),
 			ExclusiveStartShardId: lastShardID,
 		})
 		if err != nil {
 			return nil, err
 		}
-		for _, shard := range out.StreamDescription.Shards {
-			if shard.ShardId == nil {
-				continue
-			}
-			iterOut, err := w.streamsClient.GetShardIterator(ctx, &dynamodbstreams.GetShardIteratorInput{
-				StreamArn:         aws.String(streamARN),
-				ShardId:           shard.ShardId,
-				ShardIteratorType: streamtypes.ShardIteratorTypeLatest,
-			})
-			if err != nil {
-				continue
-			}
-			if iterOut.ShardIterator != nil {
-				iters = append(iters, *iterOut.ShardIterator)
-			}
-		}
+		shards = append(shards, out.StreamDescription.Shards...)
 		if out.StreamDescription.LastEvaluatedShardId == nil {
 			break
 		}
 		lastShardID = out.StreamDescription.LastEvaluatedShardId
 	}
-	return iters, nil
+	return shards, nil
 }
 
 func (w *Watcher) getRecords(ctx context.Context, shardIterator string) ([]streamtypes.Record, string, error) {
@@ -195,6 +367,21 @@ func (w *Watcher) getRecords(ctx context.Context, shardIterator string) ([]strea
 		nextIter = *out.NextShardIterator
 	}
 	return out.Records, nextIter, nil
+}
+
+func isExpiredIteratorError(err error) bool {
+	var e *streamtypes.ExpiredIteratorException
+	return errors.As(err, &e)
+}
+
+func isResourceNotFoundError(err error) bool {
+	var e *streamtypes.ResourceNotFoundException
+	return errors.As(err, &e)
+}
+
+func isTrimmedDataError(err error) bool {
+	var e *streamtypes.TrimmedDataAccessException
+	return errors.As(err, &e)
 }
 
 // extractDocumentID pulls the documentID partition key from a stream image.
