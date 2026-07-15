@@ -238,6 +238,9 @@ func (w *Watcher) pollAllShards(ctx context.Context) bool {
 				continue
 			}
 			if iter == "" {
+				w.logger.Info("shard fully consumed, marking closed", "shardID", shard.shardID)
+				shard.closed = true
+				anyClosed = true
 				continue
 			}
 			shard.iterator = iter
