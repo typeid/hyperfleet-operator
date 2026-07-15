@@ -103,6 +103,8 @@ func (w *Watcher) watchStream(ctx context.Context) {
 				if ctx.Err() != nil {
 					return
 				}
+				w.logger.Warn("getRecords failed, retaining iterator for retry", "error", err)
+				nextIters = append(nextIters, iter)
 				continue
 			}
 			for _, rec := range records {
@@ -166,7 +168,7 @@ func (w *Watcher) getShardIterators(ctx context.Context, streamARN string) ([]st
 			iterOut, err := w.streamsClient.GetShardIterator(ctx, &dynamodbstreams.GetShardIteratorInput{
 				StreamArn:         aws.String(streamARN),
 				ShardId:           shard.ShardId,
-				ShardIteratorType: streamtypes.ShardIteratorTypeLatest,
+				ShardIteratorType: streamtypes.ShardIteratorTypeTrimHorizon,
 			})
 			if err != nil {
 				continue
