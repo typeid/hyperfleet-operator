@@ -124,7 +124,9 @@ var _ = Describe("Manifest Controller", func() {
 
 			// Verify KubeContent is the raw JSON from spec.
 			for _, a := range fd.applies {
-				Expect(a.Spec.KubeContent).NotTo(BeEmpty())
+				Expect(a.Spec.ServerSideApply).NotTo(BeNil())
+				Expect(a.Spec.ServerSideApply.KubeContent).NotTo(BeNil())
+				Expect(a.Spec.ServerSideApply.KubeContent.Raw).NotTo(BeEmpty())
 			}
 		})
 
@@ -209,7 +211,7 @@ var _ = Describe("Manifest Controller", func() {
 			Expect(docIDB).To(Equal(expectedB))
 		})
 
-		It("should write DeleteDesires and requeue when waiting for confirmation", func() {
+		It("should flip desires to Type=Delete in-place and requeue when waiting for confirmation", func() {
 			resource := newTestManifest(manifestName)
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 
@@ -228,25 +230,42 @@ var _ = Describe("Manifest Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &toDelete)).To(Succeed())
 			Expect(k8sClient.Delete(ctx, &toDelete)).To(Succeed())
 
-			// Deletion reconcile: cleans up ApplyDesires, writes DeleteDesires, no confirmation → requeues.
+			// Deletion reconcile: flips all 4 desires to Type=Delete in-place;
+			// no status yet → requeues. No pre-deletion of ApplyDesire specs.
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Namespace: testNS, Name: manifestName},
 			})
 			Expect(err).NotTo(HaveOccurred())
-			// 4 ApplyDesire cleanups before DeleteDesires are written.
-			Expect(fd.deletedSpecs).To(HaveLen(4))
-			for _, spec := range fd.deletedSpecs {
-				Expect(spec).To(ContainSubstring("-applydesires/"))
+
+			// No ApplyDesire specs deleted yet — they are flipped in-place, not removed.
+			Expect(fd.deletedSpecs).To(BeEmpty(), "should not delete specs before deletion is confirmed")
+
+			// All 4 desires must have been upserted as Type=Delete with the same
+			// documentIDs as the original SSA desires (same taskKey, no "-delete" suffix).
+			deleteApplies := filterDeleteDesires(fd.applies)
+			Expect(len(deleteApplies)).To(Equal(4), "all 4 resources should be flipped to Type=Delete")
+			resources := make([]string, len(deleteApplies))
+			for i, a := range deleteApplies {
+				resources[i] = a.Spec.TargetItem.Resource
 			}
-			Expect(fd.deleteCount).To(Equal(4)) // All DeleteDesires written before checking status.
-			Expect(fd.deletes[0].Spec.TargetItem.Resource).To(Equal("serviceaccounts"))
-			Expect(fd.deletes[1].Spec.TargetItem.Resource).To(Equal("roles"))
-			Expect(fd.deletes[2].Spec.TargetItem.Resource).To(Equal("rolebindings"))
-			Expect(fd.deletes[3].Spec.TargetItem.Resource).To(Equal("jobs"))
+			Expect(resources).To(ConsistOf("serviceaccounts", "roles", "rolebindings", "jobs"))
+
+			// Document IDs must match those written during create (same taskKey).
+			taskKey := "hyperfleet-manifest/" + testNS + "/" + manifestName
+			expectedSADocID := dynamo.NewDocumentID(taskKey, "", "v1", "serviceaccounts", "zoa-actions", "zoa-runner")
+			found := false
+			for _, a := range deleteApplies {
+				if a.DynamoDBMetadata.DocumentID == expectedSADocID {
+					found = true
+					break
+				}
+			}
+			Expect(found).To(BeTrue(), "delete desire for SA should have same documentID as SSA desire")
+
 			Expect(result.RequeueAfter).NotTo(BeZero(), "should requeue while waiting for confirmation")
 		})
 
-		It("should remove finalizer after all DeleteDesire confirmations", func() {
+		It("should remove finalizer after all desires confirmed deleted, then clean up specs", func() {
 			resource := newTestManifest(manifestName)
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 
@@ -265,8 +284,16 @@ var _ = Describe("Manifest Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &toDelete)).To(Succeed())
 			Expect(k8sClient.Delete(ctx, &toDelete)).To(Succeed())
 
-			// Simulate all DeleteDesires confirmed (Successful=True).
-			fd.deleteStatus = &dynamo.DeleteDesireStatus{
+			// First deletion pass: flips desires, no status → requeues.
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: testNS, Name: manifestName},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).NotTo(BeZero())
+			Expect(fd.deletedSpecs).To(BeEmpty(), "no specs deleted while waiting")
+
+			// Simulate all desires confirmed deleted (Successful=True).
+			fd.applyStatus = &dynamo.ApplyDesireStatus{
 				Conditions: []metav1.Condition{{
 					Type:   dynamo.DesireConditionSuccessful,
 					Status: metav1.ConditionTrue,
@@ -274,8 +301,8 @@ var _ = Describe("Manifest Controller", func() {
 				}},
 			}
 
-			// Reconcile deletion with confirmation.
-			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+			// Second deletion pass: all confirmed → cleans up specs and removes finalizer.
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Namespace: testNS, Name: manifestName},
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -284,9 +311,10 @@ var _ = Describe("Manifest Controller", func() {
 			err = k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &hyperfleetv1alpha1.Manifest{})
 			Expect(err).To(HaveOccurred())
 
-			// Verify ApplyDesire specs were cleaned up (4) and ReadDesire specs for watched Job (1).
+			// Verify ApplyDesire specs were cleaned up (4) and ReadDesire spec
+			// for the watched Job (1) — only after confirmation, not before.
 			applyCleanups, readCleanups := fd.countSpecCleanups()
-			Expect(applyCleanups).To(Equal(4), "should clean up all 4 ApplyDesire specs")
+			Expect(applyCleanups).To(Equal(4), "should clean up all 4 ApplyDesire specs after deletion confirmed")
 			Expect(readCleanups).To(Equal(1), "should clean up ReadDesire spec for watched Job")
 		})
 
@@ -387,7 +415,7 @@ var _ = Describe("Manifest Controller", func() {
 			kubeContent := []byte(`{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"collect-logs-abc123","namespace":"zoa-actions"},"status":{"succeeded":1,"startTime":"2026-06-25T10:00:00Z","completionTime":"2026-06-25T10:00:05Z"}}`)
 			fd := &fakeDynamo{
 				readStatus: &dynamo.ReadDesireStatus{
-					KubeContent: kubeContent,
+					KubeContent: &runtime.RawExtension{Raw: kubeContent},
 				},
 			}
 			reconciler := &ManifestReconciler{
@@ -511,7 +539,7 @@ var _ = Describe("Manifest Controller", func() {
 
 			fd := &fakeDynamo{
 				readStatus: &dynamo.ReadDesireStatus{
-					KubeContent: []byte(`{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"collect-logs-abc123","namespace":"zoa-actions"},"status":{"succeeded":1}}`),
+					KubeContent: &runtime.RawExtension{Raw: []byte(`{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"collect-logs-abc123","namespace":"zoa-actions"},"status":{"succeeded":1}}`)},
 				},
 			}
 			er := NewEventRouter()
@@ -617,8 +645,8 @@ var _ = Describe("Manifest Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNS, Name: manifestName}, &toDelete)).To(Succeed())
 			Expect(k8sClient.Delete(ctx, &toDelete)).To(Succeed())
 
-			// Simulate all DeleteDesires confirmed (Successful=True) so finalizer is removed.
-			fd.deleteStatus = &dynamo.DeleteDesireStatus{
+			// Simulate all ApplyDesires (Type=Delete) confirmed (Successful=True) so finalizer is removed.
+			fd.applyStatus = &dynamo.ApplyDesireStatus{
 				Conditions: []metav1.Condition{{
 					Type:   dynamo.DesireConditionSuccessful,
 					Status: metav1.ConditionTrue,

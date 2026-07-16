@@ -112,7 +112,7 @@ func purgeTable(tableName string) {
 }
 
 func purgeDynamoTables() {
-	suffixes := []string{"-applydesires", "-deletedesires", "-readdesires"}
+	suffixes := []string{"-applydesires", "-readdesires"}
 	for _, prefix := range []string{mc + "-specs", mc + "-status"} {
 		for _, suffix := range suffixes {
 			purgeTable(prefix + suffix)

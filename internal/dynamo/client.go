@@ -14,19 +14,18 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	dynamodbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // ErrNotFound is returned when a desire item does not exist in DynamoDB.
 var ErrNotFound = errors.New("desire not found")
 
 const (
-	TableSuffixApplyDesires        = "-applydesires"
-	TableSuffixDeleteDesires       = "-deletedesires"
-	TableSuffixReadDesires         = "-readdesires"
-	TableSuffixStatusApplyDesires  = "-status-applydesires"
-	TableSuffixStatusDeleteDesires = "-status-deletedesires"
-	TableSuffixStatusReadDesires   = "-status-readdesires"
-	attributeDocumentID            = "documentID"
+	TableSuffixApplyDesires      = "-applydesires"
+	TableSuffixReadDesires       = "-readdesires"
+	TableSuffixStatusApplyDesires = "-status-applydesires"
+	TableSuffixStatusReadDesires  = "-status-readdesires"
+	attributeDocumentID           = "documentID"
 )
 
 type dynamoAPI interface {
@@ -46,10 +45,8 @@ type UpsertResult struct {
 // DesireClient is the interface used by controllers to interact with DynamoDB desires.
 type DesireClient interface {
 	UpsertApplyDesire(ctx context.Context, specsPrefix string, desire *ApplyDesire) (UpsertResult, error)
-	UpsertDeleteDesire(ctx context.Context, specsPrefix string, desire *DeleteDesire) (UpsertResult, error)
 	UpsertReadDesire(ctx context.Context, specsPrefix string, desire *ReadDesire) (UpsertResult, error)
 	GetApplyDesireStatus(ctx context.Context, statusPrefix, documentID string) (*ApplyDesireStatus, error)
-	GetDeleteDesireStatus(ctx context.Context, statusPrefix, documentID string) (*DeleteDesireStatus, error)
 	GetReadDesireStatus(ctx context.Context, statusPrefix, documentID string) (*ReadDesireStatus, error)
 	DeleteDesireSpec(ctx context.Context, specsPrefix, suffix, documentID string) error
 }
@@ -78,11 +75,6 @@ func (c *Client) UpsertApplyDesire(ctx context.Context, specsPrefix string, desi
 	return c.upsertDesire(ctx, specsPrefix+TableSuffixApplyDesires, desire.DocumentID, desire.Spec)
 }
 
-// UpsertDeleteDesire writes a DeleteDesire spec only when content has changed.
-func (c *Client) UpsertDeleteDesire(ctx context.Context, specsPrefix string, desire *DeleteDesire) (UpsertResult, error) {
-	return c.upsertDesire(ctx, specsPrefix+TableSuffixDeleteDesires, desire.DocumentID, desire.Spec)
-}
-
 // UpsertReadDesire writes a ReadDesire spec only when content has changed.
 func (c *Client) UpsertReadDesire(ctx context.Context, specsPrefix string, desire *ReadDesire) (UpsertResult, error) {
 	return c.upsertDesire(ctx, specsPrefix+TableSuffixReadDesires, desire.DocumentID, desire.Spec)
@@ -92,15 +84,6 @@ func (c *Client) UpsertReadDesire(ctx context.Context, specsPrefix string, desir
 func (c *Client) GetApplyDesireStatus(ctx context.Context, statusPrefix, documentID string) (*ApplyDesireStatus, error) {
 	var status ApplyDesireStatus
 	if err := c.getDesireStatus(ctx, statusPrefix+TableSuffixApplyDesires, documentID, &status); err != nil {
-		return nil, err
-	}
-	return &status, nil
-}
-
-// GetDeleteDesireStatus reads a DeleteDesire from the status table.
-func (c *Client) GetDeleteDesireStatus(ctx context.Context, statusPrefix, documentID string) (*DeleteDesireStatus, error) {
-	var status DeleteDesireStatus
-	if err := c.getDesireStatus(ctx, statusPrefix+TableSuffixDeleteDesires, documentID, &status); err != nil {
 		return nil, err
 	}
 	return &status, nil
@@ -220,9 +203,13 @@ func (c *Client) putDesireWithHash(ctx context.Context, table, documentID string
 		item["specHash"] = &dynamodbtypes.AttributeValueMemberS{Value: specHash}
 	}
 
-	if specMap, ok := spec.(ApplyDesireSpec); ok && specMap.KubeContent != nil {
-		item["spec_kubeContent"] = &dynamodbtypes.AttributeValueMemberS{Value: string(specMap.KubeContent)}
-		delete(specAttrs, "kubeContent")
+	if specMap, ok := spec.(ApplyDesireSpec); ok && specMap.ServerSideApply != nil && specMap.ServerSideApply.KubeContent != nil {
+		item["spec_kubeContent"] = &dynamodbtypes.AttributeValueMemberS{Value: string(specMap.ServerSideApply.KubeContent.Raw)}
+		if ssa, ok := specAttrs["serverSideApply"]; ok {
+			if ssaMap, ok := ssa.(*dynamodbtypes.AttributeValueMemberM); ok {
+				delete(ssaMap.Value, "kubeContent")
+			}
+		}
 	}
 
 	_, err = c.db.PutItem(ctx, &dynamodb.PutItemInput{
@@ -259,16 +246,22 @@ func (c *Client) getDesireStatus(ctx context.Context, table, documentID string, 
 		}
 	}
 
-	// Inject kubeContent from the top-level string attribute into the status map.
-	if av, ok := result.Item["status_kubeContent"]; ok {
-		if sv, ok := av.(*dynamodbtypes.AttributeValueMemberS); ok {
-			statusAttrs["kubeContent"] = &dynamodbtypes.AttributeValueMemberB{Value: []byte(sv.Value)}
-		}
-	}
-
 	if err := attributevalue.UnmarshalMap(statusAttrs, out); err != nil {
 		return fmt.Errorf("unmarshal %s/%s: %w", table, documentID, err)
 	}
+
+	// ReadDesireStatus.KubeContent is tagged dynamodbav:"-" in the shared type
+	// (mirroring kube-applier-aws's codec), so the standard unmarshaller skips
+	// it. Manually populate it from the top-level status_kubeContent attribute
+	// that kube-applier-aws writes.
+	if rs, ok := out.(*ReadDesireStatus); ok {
+		if av, ok := result.Item["status_kubeContent"]; ok {
+			if sv, ok := av.(*dynamodbtypes.AttributeValueMemberS); ok && sv.Value != "" {
+				rs.KubeContent = &runtime.RawExtension{Raw: []byte(sv.Value)}
+			}
+		}
+	}
+
 	return nil
 }
 

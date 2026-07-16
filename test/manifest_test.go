@@ -123,7 +123,7 @@ var _ = Describe("Manifest lifecycle", func() {
 		}).Should(Succeed())
 	})
 
-	It("should write DeleteDesires and clean up when Manifest is deleted", func() {
+	It("should write delete ApplyDesires and clean up when Manifest is deleted", func() {
 		By("creating a Manifest CR")
 		hfm := newTestManifest(manifestName)
 		Expect(k8sClient.Create(ctx, hfm)).To(Succeed())
@@ -147,16 +147,12 @@ var _ = Describe("Manifest lifecycle", func() {
 			g.Expect(items).To(BeEmpty(), "all ApplyDesire specs should be cleaned up on deletion")
 		}).Should(Succeed())
 
-		By("verifying DeleteDesires were processed and specs cleaned up from DynamoDB")
-		specsDelete := mc + "-specs-deletedesires"
-		statusDelete := mc + "-status-deletedesires"
+		By("verifying delete ApplyDesires were processed and status recorded in DynamoDB")
+		statusApply := mc + "-status-applydesires"
 		Eventually(func(g Gomega) {
-			// Status entries prove the desires were created and confirmed.
-			statusItems := scanTable(statusDelete)
-			g.Expect(len(statusItems)).To(BeNumerically(">=", 4), "expected status entries for processed DeleteDesires")
-			// Specs should be cleaned up after completion.
-			specItems := scanTable(specsDelete)
-			g.Expect(specItems).To(BeEmpty(), "all DeleteDesire specs should be cleaned up after completion")
+			// Status entries prove the delete desires were created and confirmed.
+			statusItems := scanTable(statusApply)
+			g.Expect(len(statusItems)).To(BeNumerically(">=", 4), "expected status entries for processed delete ApplyDesires")
 		}).Should(Succeed())
 
 		By("verifying Manifest CR is fully gone")

@@ -286,55 +286,7 @@ var _ = BeforeSuite(func() {
 		}
 	}()
 
-	// Simulate kube-applier-aws: poll specs-deletedesires and write status
-	// entries with Successful=True so controllers see deletion confirmations.
-	go func() {
-		defer GinkgoRecover()
-		specsTable := mc + "-specs-deletedesires"
-		statusTable := mc + "-status-deletedesires"
-
-		completeStatus := dynamo.DeleteDesireStatus{
-			Conditions: []metav1.Condition{{
-				Type:               dynamo.DesireConditionSuccessful,
-				Status:             metav1.ConditionTrue,
-				Reason:             "NoErrors",
-				LastTransitionTime: metav1.Now(),
-			}},
-		}
-		statusAttrs, err := attributevalue.MarshalMap(completeStatus)
-		Expect(err).NotTo(HaveOccurred())
-
-		ticker := time.NewTicker(500 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				out, err := dynamoDBCli.Scan(ctx, &dynamodb.ScanInput{
-					TableName: aws.String(specsTable),
-				})
-				if err != nil {
-					continue
-				}
-				for _, item := range out.Items {
-					docID, ok := item["documentID"]
-					if !ok {
-						continue
-					}
-					statusItem := map[string]dynamodbtypes.AttributeValue{
-						"documentID": docID,
-						"status":     &dynamodbtypes.AttributeValueMemberM{Value: statusAttrs},
-					}
-					_, _ = dynamoDBCli.PutItem(ctx, &dynamodb.PutItemInput{
-						TableName:           aws.String(statusTable),
-						Item:                statusItem,
-						ConditionExpression: aws.String("attribute_not_exists(documentID)"),
-					})
-				}
-			}
-		}
-	}()
+	// ── kube-applier-aws readdesires simulator ──
 
 	// Simulate kube-applier-aws: poll specs-readdesires and write status
 	// entries with fabricated KubeContent (a completed Job).
@@ -364,8 +316,8 @@ var _ = BeforeSuite(func() {
 					_, _ = dynamoDBCli.PutItem(ctx, &dynamodb.PutItemInput{
 						TableName: aws.String(statusTable),
 						Item: map[string]dynamodbtypes.AttributeValue{
-							"documentID":  docID,
-							"kubeContent": &dynamodbtypes.AttributeValueMemberB{Value: completedJob},
+							"documentID":          docID,
+							"status_kubeContent":  &dynamodbtypes.AttributeValueMemberS{Value: string(completedJob)},
 						},
 						ConditionExpression: aws.String("attribute_not_exists(documentID)"),
 					})
@@ -400,7 +352,7 @@ func freePort() string {
 }
 
 func createTables(db *dynamodb.Client) {
-	suffixes := []string{"-applydesires", "-deletedesires", "-readdesires"}
+	suffixes := []string{"-applydesires", "-readdesires"}
 	prefixes := []string{mc + "-specs", mc + "-status"}
 
 	for _, prefix := range prefixes {

@@ -28,28 +28,23 @@ import (
 
 // fakeDynamo records DynamoDB calls made by controllers.
 type fakeDynamo struct {
-	mu          sync.Mutex
-	applyCount  int
-	deleteCount int
-	readCount   int
-	applies     []*dynamo.ApplyDesire
-	deletes     []*dynamo.DeleteDesire
-	reads       []*dynamo.ReadDesire
+	mu         sync.Mutex
+	applyCount int
+	readCount  int
+	applies    []*dynamo.ApplyDesire
+	reads      []*dynamo.ReadDesire
 
 	// Set readStatus to return a specific status from GetReadDesireStatus.
 	// Per-docID maps take precedence over the single-value fields.
 	readStatus *dynamo.ReadDesireStatus
 	// Set applyStatus to return a specific status from GetApplyDesireStatus.
 	applyStatus *dynamo.ApplyDesireStatus
-	// Set deleteStatus to return a specific status from GetDeleteDesireStatus.
-	deleteStatus *dynamo.DeleteDesireStatus
 
 	// Per-docID status maps — when set, these take precedence over the
 	// single-value fields above, enabling tests to return different statuses
 	// for different resources (partial sync, mixed success/failure).
-	applyStatuses  map[string]*dynamo.ApplyDesireStatus
-	deleteStatuses map[string]*dynamo.DeleteDesireStatus
-	readStatuses   map[string]*dynamo.ReadDesireStatus
+	applyStatuses map[string]*dynamo.ApplyDesireStatus
+	readStatuses  map[string]*dynamo.ReadDesireStatus
 
 	// deletedSpecs tracks calls to DeleteDesireSpec (suffix/docID).
 	deletedSpecs []string
@@ -59,14 +54,11 @@ type fakeDynamo struct {
 	lastPutTime time.Time
 	// Set applyErr to make UpsertApplyDesire return an error.
 	applyErr error
-	// Set deleteErr to make UpsertDeleteDesire return an error.
-	deleteErr error
 	// Set readErr to make UpsertReadDesire return an error.
 	readErr error
 	// Per-docID error maps for Get*Status methods.
-	applyStatusErrors  map[string]error
-	deleteStatusErrors map[string]error
-	readStatusErrors   map[string]error
+	applyStatusErrors map[string]error
+	readStatusErrors  map[string]error
 }
 
 var _ dynamo.DesireClient = (*fakeDynamo)(nil)
@@ -81,17 +73,6 @@ func (f *fakeDynamo) UpsertApplyDesire(_ context.Context, _ string, desire *dyna
 	f.applies = append(f.applies, desire)
 	f.lastPutTime = time.Now().UTC().Truncate(time.Second)
 	return dynamo.UpsertResult{Changed: true, UpdateTime: f.lastPutTime}, nil
-}
-
-func (f *fakeDynamo) UpsertDeleteDesire(_ context.Context, _ string, desire *dynamo.DeleteDesire) (dynamo.UpsertResult, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.deleteErr != nil {
-		return dynamo.UpsertResult{}, f.deleteErr
-	}
-	f.deleteCount++
-	f.deletes = append(f.deletes, desire)
-	return dynamo.UpsertResult{Changed: true, UpdateTime: time.Now().UTC().Truncate(time.Second)}, nil
 }
 
 func (f *fakeDynamo) UpsertReadDesire(_ context.Context, _ string, desire *dynamo.ReadDesire) (dynamo.UpsertResult, error) {
@@ -124,21 +105,6 @@ func (f *fakeDynamo) GetApplyDesireStatus(_ context.Context, _, docID string) (*
 			s.ObservedDesireUpdateTime = f.lastPutTime
 		}
 		return &s, nil
-	}
-	return nil, fmt.Errorf("%w: fake", dynamo.ErrNotFound)
-}
-
-func (f *fakeDynamo) GetDeleteDesireStatus(_ context.Context, _, docID string) (*dynamo.DeleteDesireStatus, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if e, ok := f.deleteStatusErrors[docID]; ok {
-		return nil, e
-	}
-	if s, ok := f.deleteStatuses[docID]; ok {
-		return s, nil
-	}
-	if f.deleteStatus != nil {
-		return f.deleteStatus, nil
 	}
 	return nil, fmt.Errorf("%w: fake", dynamo.ErrNotFound)
 }

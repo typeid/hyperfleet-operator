@@ -124,6 +124,7 @@ func (r *NodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	desire := &dynamo.ApplyDesire{
 		DynamoDBMetadata: dynamo.DynamoDBMetadata{DocumentID: docID},
 		Spec: dynamo.ApplyDesireSpec{
+			Type:              dynamo.ApplyDesireTypeServerSideApply,
 			ManagementCluster: mc,
 			ClusterID:         render.ClusterIDFromNamespace(cluster.Namespace),
 			TargetItem: dynamo.ResourceReference{
@@ -133,7 +134,9 @@ func (r *NodePoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 				Namespace: ns,
 				Name:      m.Name,
 			},
-			KubeContent: content,
+		ServerSideApply: &dynamo.ServerSideApplyConfig{
+			KubeContent: &runtime.RawExtension{Raw: content},
+		},
 		},
 	}
 	readDesire := &dynamo.ReadDesire{
@@ -213,18 +216,15 @@ func (r *NodePoolReconciler) reconcileDelete(ctx context.Context, nodePool *hype
 		m := render.NodePoolResource(nodePool, cluster)
 		ns := m.Namespace
 
-		// Remove ApplyDesire spec before creating the DeleteDesire to prevent
-		// kube-applier from racing and re-applying the resource being deleted.
-		applyDocID := dynamo.NewDocumentID(taskKey, m.Group, m.Version, m.Resource, ns, m.Name)
-		if err := r.Dynamo.DeleteDesireSpec(ctx, specsPrefix, "-applydesires", applyDocID); err != nil {
-			log.Error(err, "failed to clean up ApplyDesire spec", "nodepool", m.Name)
-		}
-
-		docID := dynamo.NewDocumentID(taskKey+"-delete", m.Group, m.Version, m.Resource, ns, m.Name)
-
-		deleteDesire := &dynamo.DeleteDesire{
+		// Switch the ApplyDesire to Type=Delete in-place, using the same
+		// documentID as the original SSA desire. kube-applier sees a MODIFY
+		// stream event and deletes the resource from the MC instead of
+		// re-applying it.
+		docID := dynamo.NewDocumentID(taskKey, m.Group, m.Version, m.Resource, ns, m.Name)
+		deleteDesire := &dynamo.ApplyDesire{
 			DynamoDBMetadata: dynamo.DynamoDBMetadata{DocumentID: docID},
-			Spec: dynamo.DeleteDesireSpec{
+			Spec: dynamo.ApplyDesireSpec{
+				Type:              dynamo.ApplyDesireTypeDelete,
 				ManagementCluster: mc,
 				ClusterID:         render.ClusterIDFromNamespace(cluster.Namespace),
 				TargetItem: dynamo.ResourceReference{
@@ -236,28 +236,28 @@ func (r *NodePoolReconciler) reconcileDelete(ctx context.Context, nodePool *hype
 				},
 			},
 		}
-		if _, err := r.Dynamo.UpsertDeleteDesire(ctx, specsPrefix, deleteDesire); err != nil {
+		ur, err := r.Dynamo.UpsertApplyDesire(ctx, specsPrefix, deleteDesire)
+		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("upsert delete desire: %w", err)
 		}
 
-		deleteEntry := DesireStatusEntry{DocID: docID, Resource: m.Resource, Name: m.Name}
-		deleteSynced := CheckDeleteDesireStatuses(ctx, r.Dynamo, statusPrefix, []DesireStatusEntry{deleteEntry}, nodePool.Generation)
+		deleteEntry := DesireStatusEntry{DocID: docID, Resource: m.Resource, Name: m.Name, DesireUpdateTime: ur.UpdateTime}
+		deleteSynced := CheckApplyDesireStatuses(ctx, r.Dynamo, statusPrefix, []DesireStatusEntry{deleteEntry}, nodePool.Generation)
 		r.setSyncedCondition(ctx, nodePool, deleteSynced)
 
 		if deleteSynced.Status != metav1.ConditionTrue {
-			log.Info("Waiting for DeleteDesire confirmation", "nodePool", nodePool.Name)
+			log.Info("Waiting for NodePool to be deleted on management cluster", "nodePool", nodePool.Name)
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
 
-		// Clean up DeleteDesire spec from DynamoDB.
-		if err := r.Dynamo.DeleteDesireSpec(ctx, specsPrefix, "-deletedesires", docID); err != nil {
-			log.Error(err, "failed to clean up DeleteDesire spec", "nodepool", m.Name)
+		// Resource confirmed deleted — remove the ApplyDesire and ReadDesire
+		// specs from DynamoDB so kube-applier stops tracking them.
+		if err := r.Dynamo.DeleteDesireSpec(ctx, specsPrefix, "-applydesires", docID); err != nil {
+			log.Error(err, "Failed to clean up ApplyDesire spec", "nodepool", m.Name)
 		}
-
-		// Clean up the NodePool ReadDesire spec from DynamoDB.
 		readDocID := dynamo.NewDocumentID(taskKey+"-read", m.Group, m.Version, m.Resource, ns, m.Name)
 		if err := r.Dynamo.DeleteDesireSpec(ctx, specsPrefix, "-readdesires", readDocID); err != nil {
-			log.Error(err, "failed to clean up ReadDesire spec", "nodepool", m.Name)
+			log.Error(err, "Failed to clean up ReadDesire spec", "nodepool", m.Name)
 		}
 	}
 
@@ -309,7 +309,7 @@ func (r *NodePoolReconciler) updateStatusFromDynamo(ctx context.Context, nodePoo
 				Conditions []metav1.Condition `json:"conditions"`
 			} `json:"status"`
 		}
-		if err := json.Unmarshal(readStatus.KubeContent, &np); err != nil {
+		if err := json.Unmarshal(readStatus.KubeContent.Raw, &np); err != nil {
 			log.Error(err, "Failed to unmarshal NodePool status")
 		} else {
 			npConditions = np.Status.Conditions

@@ -5,6 +5,7 @@ go 1.26.4
 replace github.com/typeid/hyperfleet-operator/api => ./api
 
 require (
+	github.com/rrp-bot/rosa-hyperfleet-kube-applier v0.0.0-20260714052553-de22bbb8b450
 	github.com/aws/aws-sdk-go-v2 v1.42.0
 	github.com/aws/aws-sdk-go-v2/config v1.32.25
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.24
