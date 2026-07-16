@@ -13,7 +13,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/dynamodbstreams v1.34.0
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.10.0
-	github.com/jmelis/postgres-controller-backend v0.0.0-20260716172009-4e264b8fb117
+	github.com/jmelis/postgres-controller-backend v0.0.0-20260716174204-5b657cded934
 	github.com/onsi/ginkgo/v2 v2.27.4
 	github.com/onsi/gomega v1.39.0
 	github.com/openshift/api v0.0.0-20260416105050-3c6b218b8a80
