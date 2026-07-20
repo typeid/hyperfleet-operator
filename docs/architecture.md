@@ -24,7 +24,7 @@ The operator uses [postgres-controller-backend](https://github.com/jmelis/postgr
 
 ### CRDs
 
-CRDs are under API group `hyperfleet.io/v1alpha1`. Most are **namespace-scoped** — the namespace is the cluster ID, with the account ID stored as a label. **ManagementCluster** is the exception: it is **cluster-scoped** and declared as an `UnshardedGVK` so every operator pod sees all ManagementClusters regardless of its bucket slice.
+CRDs are under API group `hyperfleet.io/v1alpha1`. Most are **namespace-scoped** — the namespace is the cluster ID, with the account ID stored as a label. **ManagementCluster** is the exception: it is **cluster-scoped** and declared as an `UnshardedGVK` so every operator pod sees all ManagementClusters regardless of its shard assignment.
 
 - **Cluster** — represents a ROSA HCP cluster. Spec contains all the configuration needed to create a HostedCluster on a management cluster (networking, IAM roles, OIDC issuer, etc.).
 - **NodePool** — represents a set of worker nodes for a Cluster. References a parent Cluster via `spec.clusterRef`. Must be in the same namespace as its parent Cluster.
@@ -77,7 +77,7 @@ ManagementCluster CRs in PostgreSQL serve as the registry of available managemen
 
 ## Deployment
 
-The operator runs as a StatefulSet, deployed via a Helm chart through ArgoCD. It connects to PostgreSQL for CR storage and to DynamoDB for desire management. The StatefulSet provides stable pod ordinals used for [bucket sharding](bucket-sharding.md).
+The operator runs as a StatefulSet, deployed via a Helm chart through ArgoCD. It connects to PostgreSQL for CR storage and to DynamoDB for desire management. The StatefulSet provides stable pod ordinals used for [namespace-hash sharding](sharding.md).
 
 ```
 charts/hyperfleet-operator/
@@ -98,6 +98,6 @@ Required configuration:
 - `baseDomain` — DNS base domain for hosted clusters
 - `POSTGRES_DSN` — PostgreSQL connection string
 
-## Horizontal Scaling via Bucket Sharding
+## Horizontal Scaling via Namespace-Hash Sharding
 
-The operator scales horizontally via bucket-based sharding. Each resource is assigned a `bucket_id` using a namespace-based FNV-1a hash, giving cluster-level affinity — all resources for one cluster land in the same bucket. Each StatefulSet replica owns a slice of buckets derived from its pod ordinal. See [Bucket Sharding](bucket-sharding.md) for configuration and scaling details.
+The operator scales horizontally via namespace-hash sharding. The pgruntime cache partitions its List/Watch streams using `abs(hashtext(namespace)::bigint) % replicaCount`, giving cluster-level affinity — all resources for one cluster land in the same shard. Each StatefulSet replica owns a single shard equal to its pod ordinal. See [Sharding](sharding.md) for configuration and scaling details.

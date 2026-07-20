@@ -22,7 +22,6 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -135,9 +134,6 @@ var _ = BeforeSuite(func() {
 	mgr, mgrErr = pgruntime.NewManager(pgruntime.Options{
 		Scheme: scheme,
 		DSN:    dsn,
-		UnshardedGVKs: []schema.GroupVersionKind{
-			hyperfleetv1alpha1.SchemeGroupVersion.WithKind("ManagementCluster"),
-		},
 		Logger: logf.Log.WithName("pgruntime"),
 	})
 	Expect(mgrErr).NotTo(HaveOccurred())

@@ -34,4 +34,4 @@ The controller watches two resource types:
 
 - Cluster and Placement are namespace-scoped under the customer's AWS account ID. The Placement is created in the same namespace as the Cluster.
 - Owner references ensure Placements are garbage-collected when the Cluster CR is deleted. The Cluster controller also explicitly deletes the Placement during its deletion flow as a safety measure.
-- ManagementCluster is cluster-scoped and declared as an `UnshardedGVK`, so every operator pod sees all ManagementClusters through the standard manager client (see [Bucket Sharding](bucket-sharding.md)).
+- ManagementCluster is cluster-scoped and declared as an `UnshardedGVK`, so every operator pod sees all ManagementClusters through the standard manager client (see [Sharding](sharding.md)).

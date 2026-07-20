@@ -37,7 +37,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	"github.com/typeid/hyperfleet-operator/api/bucket"
 	v1alpha1 "github.com/typeid/hyperfleet-operator/api/v1alpha1"
 	"github.com/typeid/hyperfleet-operator/internal/controller"
 	"github.com/typeid/hyperfleet-operator/internal/dynamo"
@@ -81,7 +80,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	bucketCount := envInt("BUCKET_COUNT", 1)
 	replicaCount := envInt("REPLICA_COUNT", 1)
 	ordinal, err := podOrdinal()
 	if err != nil {
@@ -89,14 +87,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	bucketIDs := bucket.Slice(bucketCount, replicaCount, ordinal)
-	assigner := bucket.Assigner(bucketCount)
-
-	setupLog.Info("bucket sharding config",
-		"bucketCount", bucketCount,
+	setupLog.Info("shard config",
 		"replicaCount", replicaCount,
 		"ordinal", ordinal,
-		"bucketIDs", bucketIDs,
 	)
 
 	signalCtx := ctrl.SetupSignalHandler()
@@ -118,12 +111,14 @@ func main() {
 	log := ctrl.Log.WithName("pgruntime")
 
 	mgr, err := pgruntime.NewManager(pgruntime.Options{
-		Scheme:         scheme,
-		DSN:            dsn,
-		BucketIDs:      bucketIDs,
-		BucketAssigner: assigner,
-		UnshardedGVKs: []schema.GroupVersionKind{
-			v1alpha1.SchemeGroupVersion.WithKind("ManagementCluster"),
+		Scheme: scheme,
+		DSN:    dsn,
+		Shard: &pgruntime.ShardConfig{
+			Mod:   replicaCount,
+			Owned: []int{ordinal},
+			UnshardedGVKs: []schema.GroupVersionKind{
+				v1alpha1.SchemeGroupVersion.WithKind("ManagementCluster"),
+			},
 		},
 		Logger:                 log,
 		HealthProbeBindAddress: probeAddr,
