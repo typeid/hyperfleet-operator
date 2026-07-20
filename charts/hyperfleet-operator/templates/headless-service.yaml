@@ -1,7 +1,7 @@
 # Kubernetes requires a headless service for every StatefulSet (spec.serviceName).
 # The operator runs as a StatefulSet so each pod gets a stable ordinal (pod-0,
-# pod-1, ...) which it parses from its hostname to derive its bucket slice for
-# sharding. This service does not route traffic — it only exists to satisfy the
+# pod-1, ...) which it parses from its hostname to derive its shard assignment.
+# This service does not route traffic — it only exists to satisfy the
 # StatefulSet API requirement.
 apiVersion: v1
 kind: Service

@@ -12,9 +12,6 @@ postgres:
   secretName: postgres-dsn
   secretKey: dsn
 
-hyperfleetdb:
-  bucketCount: 1
-
 serviceAccount:
   create: true
   name: hyperfleet-operator

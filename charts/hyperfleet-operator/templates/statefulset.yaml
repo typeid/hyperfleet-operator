@@ -42,8 +42,6 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.postgres.secretName | default "postgres-dsn" }}
                   key: {{ .Values.postgres.secretKey | default "dsn" }}
-            - name: BUCKET_COUNT
-              value: {{ .Values.hyperfleetdb.bucketCount | default 1 | quote }}
             - name: REPLICA_COUNT
               value: {{ .Values.replicaCount | quote }}
           ports:

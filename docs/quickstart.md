@@ -78,8 +78,7 @@ helm install hyperfleet-operator charts/hyperfleet-operator \
 | `image.repository`           | `quay.io/cbusse_openshift/hyperfleet-operator` | Container image                                      |
 | `image.tag`                  | `latest`                                       | Image tag                                            |
 | `serviceAccount.annotations` | `{}`                                           | SA annotations (set IAM role ARN)                    |
-| `replicaCount`               | `1`                                            | Number of replicas                                   |
-| `hyperfleetdb.bucketCount`   | `1`                                            | Sharding buckets (must be divisible by replicaCount) |
+| `replicaCount`               | `1`                                            | Number of replicas (= shard count)                   |
 
 ## 5. Create a ManagementCluster
 
