@@ -1,6 +1,6 @@
 module github.com/typeid/hyperfleet-operator
 
-go 1.26.4
+go 1.26.3
 
 replace github.com/typeid/hyperfleet-operator/api => ./api
 
@@ -13,7 +13,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/dynamodbstreams v1.34.0
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.10.0
-	github.com/jmelis/postgres-controller-backend v0.0.0-20260720102648-72e89594aaaf
+	github.com/jmelis/postgres-controller-backend v0.0.0-20260721150910-ccd8a96693ce
 	github.com/onsi/ginkgo/v2 v2.27.4
 	github.com/onsi/gomega v1.39.0
 	github.com/openshift/api v0.0.0-20260416105050-3c6b218b8a80
